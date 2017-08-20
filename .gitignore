@@ -1,0 +1,9 @@
+Application
+*.log
+*.o
+submit.py
+run.sh
+mp1_specifications.pdf
+
+### Xcode ###
+*.xcodeproj/*
