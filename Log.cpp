@@ -78,7 +78,7 @@ void Log::LOG(Address *addr, const char * str, ...) {
 
 	if (!firstTime) {
 		int magicNumber = 0;
-		string magic = MAGIC_NUMBER;
+		std::string magic = MAGIC_NUMBER;
 		int len = magic.length();
 		for ( int i = 0; i < len; i++ ) {
 			magicNumber += (int)magic.at(i);

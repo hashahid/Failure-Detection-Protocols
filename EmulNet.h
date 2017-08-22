@@ -15,7 +15,6 @@
 #include "Params.h"
 #include "Member.h"
 
-using namespace std;
 
 /**
  * Struct Name: en_msg
@@ -90,7 +89,7 @@ public:
  	EmulNet& operator = (EmulNet &anotherEmulNet);
  	virtual ~EmulNet();
 	void *ENinit(Address *myaddr, short port);
-	int ENsend(Address *myaddr, Address *toaddr, string data);
+	int ENsend(Address *myaddr, Address *toaddr, std::string data);
 	int ENsend(Address *myaddr, Address *toaddr, char *data, int size);
 	int ENrecv(Address *myaddr, int (* enq)(void *, char *, int), struct timeval *t, int times, void *queue);
 	int ENcleanup();

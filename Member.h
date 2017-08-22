@@ -35,19 +35,19 @@ public:
 	 // Overloaded = operator
 	Address& operator =(const Address &anotherAddress);
 	bool operator ==(const Address &anotherAddress);
-	Address(string address) {
+	Address(std::string address) {
 		size_t pos = address.find(":");
 		int id = stoi(address.substr(0, pos));
 		short port = (short)stoi(address.substr(pos + 1, address.size()-pos-1));
 		memcpy(&addr[0], &id, sizeof(int));
 		memcpy(&addr[4], &port, sizeof(short));
 	}
-	string getAddress() {
+	std::string getAddress() {
 		int id = 0;
 		short port;
 		memcpy(&id, &addr[0], sizeof(int));
 		memcpy(&port, &addr[4], sizeof(short));
-		return to_string(id) + ":" + to_string(port);
+		return std::to_string(id) + ":" + std::to_string(port);
 	}
 	void init() {
 		memset(&addr, 0, sizeof(addr));
@@ -105,11 +105,11 @@ public:
 	// counter for ping timeout
 	int timeOutCounter;
 	// Membership table
-	vector<MemberListEntry> memberList;
+	std::vector<MemberListEntry> memberList;
 	// My position in the membership table
-	vector<MemberListEntry>::iterator myPos;
+	std::vector<MemberListEntry>::iterator myPos;
 	// Queue for failure detection messages
-	queue<q_elt> mp1q;
+	std::queue<q_elt> mp1q;
 	/**
 	 * Constructor
 	 */

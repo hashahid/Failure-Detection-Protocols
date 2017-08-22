@@ -35,8 +35,8 @@
 #include <algorithm>
 #include <queue>
 #include <fstream>
-
-using namespace std;
+#include <random>
+#include <set>
 
 #define STDCLLBKARGS (void *env, char *data, int size)
 #define STDCLLBKRET	void

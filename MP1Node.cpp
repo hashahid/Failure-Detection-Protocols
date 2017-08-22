@@ -11,8 +11,6 @@
  * Note: You can change/add any functions in MP1Node.{h,cpp}
  */
 
-// FIXME PREPEND std NAMESPACE!
-
 const int MP1Node::gossipTargets = 2;
 
 /**
@@ -58,7 +56,7 @@ int MP1Node::recvLoop() {
  */
 int MP1Node::enqueueWrapper(void *env, char *buff, int size) {
     Queue q;
-    return q.enqueue((queue<q_elt> *)env, (void *)buff, size);
+    return q.enqueue((std::queue<q_elt> *)env, (void *)buff, size);
 }
 
 /**
@@ -97,12 +95,6 @@ void MP1Node::nodeStart(char *servaddrstr, short servport) {
  * DESCRIPTION: Find out who I am and start up
  */
 int MP1Node::initThisNode(Address *joinaddr) {
-    /*
-     * This function is partially implemented and may require changes
-     */
-    int id = *(int*)(&memberNode->addr.addr);
-    int port = *(short*)(&memberNode->addr.addr[4]);
-    
     memberNode->bFailed = false;
     memberNode->inited = true;
     memberNode->inGroup = false;
@@ -291,16 +283,13 @@ void MP1Node::nodeLoopOps() {
         //                		}
 
         std::set<int> randomIndices;
-//        int maxRandIndices = min(gossipTargets, static_cast<int>(memberNode->memberList.size()) - 1);
-        int maxRandIndices = min(gossipTargets, static_cast<int>(memberNode->memberList.size()) - 1);
+        int maxRandIndices = std::min(gossipTargets, static_cast<int>(memberNode->memberList.size()) - 1);
         while (static_cast<int>(randomIndices.size()) < maxRandIndices) {
-            // randomly get an index
+            // randomly get the index of your gossip target
             int randIdx = getRandomInteger(0, memberNode->memberList.size() - 1);
-            
-//            if (distance(memberNode->memberList.begin() + randIdx, memberNode->myPos) == 0) {
-//                continue;
-//            }
-            randomIndices.insert(randIdx);
+            if (memberNode->memberList[randIdx].getid() != getSelfId()) {
+                randomIndices.insert(randIdx);
+            }
         }
         
         // FIXME - duplicated code with JOINREP send message
@@ -310,10 +299,21 @@ void MP1Node::nodeLoopOps() {
         MessageHdr *msg = (MessageHdr *) malloc(msgsize * sizeof(char));
         
         msg->msgType = HEARTBEAT;
-        size_t memberListSize = memberNode->memberList.size();
+//        size_t memberListSize = memberNode->memberList.size();
+        size_t memberListSize = 0;
+        for (auto &memberListEntry: memberNode->memberList) {
+            if (memberNode->timeOutCounter - memberListEntry.gettimestamp() > TFAIL) {
+                continue;
+            }
+            ++memberListSize;
+        }
         memcpy((char *)(msg+1), &memberListSize, sizeof(size_t));
         
         for (auto &memberListEntry: memberNode->memberList) {
+            if (memberNode->timeOutCounter - memberListEntry.gettimestamp() > TFAIL) {
+                continue;
+            }
+            
             memcpy((char *)(msg+1) + memOffset, &memberListEntry.id, sizeof(int));
             memOffset += sizeof(int);
             
@@ -337,19 +337,15 @@ void MP1Node::nodeLoopOps() {
         
     }
     
-    // FIXME - needs to exclude self (maybe compare *it to myPos?)
     for(auto it = memberNode->memberList.begin(); it != memberNode->memberList.end();) {
-        if(memberNode->timeOutCounter - it->gettimestamp() > TREMOVE && it->id != *(int *)(&memberNode->addr.addr)) {
+        if(memberNode->timeOutCounter - it->gettimestamp() > TREMOVE) {
 #ifdef DEBUGLOG
             Address memberaddr;
             memset(&memberaddr, 0, sizeof(Address));
-            *(int *)(&memberaddr.addr) = it->id;
-            *(short *)(&memberaddr.addr[4]) = it->port;
+            *(int *)(&memberaddr.addr) = it->getid();
+            *(short *)(&memberaddr.addr[4]) = it->getport();
             log->logNodeRemove(&memberNode->addr, &memberaddr);
 #endif
-
-            cout << "Node " << it->id << " removed by node " << *(int *)(&memberNode->addr.addr) << " because";
-            cout << " my local time is " << memberNode->timeOutCounter << " and the other node's is " << it->timestamp << endl;
             it = memberNode->memberList.erase(it);
         }
         else {
@@ -359,11 +355,10 @@ void MP1Node::nodeLoopOps() {
     
     memberNode->timeOutCounter++;
     
-    int selfId = *(int *)(&memberNode->addr.addr);
-    MemberListEntry *self = getMemberFromMemberList(selfId);
-//    cout << "My ID is: " << selfId << " and I'm about to see if I exist:" << endl;
+    // Update myself in my own membership list so that I don't have to rely on others info about myself
+    // Plus now I can't delete myself from my own list if I haven't heard about myself in a while
+    MemberListEntry *self = getMemberFromMemberList(getSelfId());
     if (self) {
-//        cout << "I do exist! I'm about to update myself in my membership list" << endl;
         self->setheartbeat(memberNode->heartbeat);
         self->settimestamp(memberNode->timeOutCounter);
     }
@@ -397,8 +392,8 @@ Address MP1Node::getMemberListEntryAddress(MemberListEntry *entry) {
     Address entryaddr;
     
     memset(&entryaddr, 0, sizeof(Address));
-    *(int *)(&entryaddr.addr) = entry->id;
-    *(short *)(&entryaddr.addr[4]) = entry->port;
+    *(int *)(&entryaddr.addr) = entry->getid();
+    *(short *)(&entryaddr.addr[4]) = entry->getport();
     
     return entryaddr;
 }
@@ -421,10 +416,12 @@ Address MP1Node::getAddressFromIDAndPort(int id, short port) {
 void MP1Node::initMemberListTable(Member *memberNode) {
     memberNode->memberList.clear();
     
-    int selfId = *(int *)(&memberNode->addr.addr);
-    short selfPort = *(short *)(&memberNode->addr.addr[4]);
-    MemberListEntry self(selfId, selfPort, memberNode->heartbeat, memberNode->timeOutCounter);
+    MemberListEntry self(getSelfId(), getSelfPort(), memberNode->heartbeat, memberNode->timeOutCounter);
     memberNode->memberList.push_back(self);
+    
+#ifdef DEBUGLOG
+    log->logNodeAdd(&memberNode->addr, &memberNode->addr);
+#endif
 }
 
 /**
@@ -448,28 +445,15 @@ void MP1Node::processJoinRequest(char *data) {
     memcpy(&id, data + memOffset, sizeof(int));
     memOffset += sizeof(int);
     
-    
     memcpy(&port, data + memOffset, sizeof(short));
     memOffset += sizeof(short);
     
     memcpy(&heartbeat, data + memOffset, sizeof(long));
     
-    MemberListEntry newEntry(id, port, heartbeat, memberNode->timeOutCounter);
-    newEntry.settimestamp(memberNode->timeOutCounter);
-    
-    // add to your own member list vector
-    memberNode->memberList.push_back(newEntry);
-    
-    Address newEntryAddr = getMemberListEntryAddress(&newEntry);
-    
-#ifdef DEBUGLOG
-    log->logNodeAdd(&memberNode->addr, &newEntryAddr);
-#endif
-    
     // create JOINREP message: format of data is {struct MessageHdr + memberList.size() + the member list}
     size_t msgsize = sizeof(MessageHdr) + sizeof(size_t);
     memOffset = sizeof(size_t); // reset memOffset for use in copying the memberList
-    msgsize += memberNode->memberList.size() * (sizeof(int) + sizeof(short) + sizeof(long) + sizeof(long));
+    msgsize += memberNode->memberList.size() * (sizeof(int) + sizeof(short) + sizeof(long));
     MessageHdr *msg = (MessageHdr *) malloc(msgsize * sizeof(char));
     
     msg->msgType = JOINREP;
@@ -485,22 +469,30 @@ void MP1Node::processJoinRequest(char *data) {
         
         memcpy((char *)(msg+1) + memOffset, &memberListEntry.heartbeat, sizeof(long));
         memOffset += sizeof(long);
-        
-        memcpy((char *)(msg+1) + memOffset, &memberListEntry.timestamp, sizeof(long));
-        memOffset += sizeof(long);
     }
+    
+    MemberListEntry newEntry(id, port, heartbeat, memberNode->timeOutCounter);
+    
+    Address newEntryAddr = getMemberListEntryAddress(&newEntry);
     
     // send JOINREP message to new member
     emulNet->ENsend(&memberNode->addr, &newEntryAddr, (char *)msg, msgsize);
     
     free(msg);
+    
+    // add to your own member list vector
+    memberNode->memberList.push_back(newEntry);
+    
+#ifdef DEBUGLOG
+    log->logNodeAdd(&memberNode->addr, &newEntryAddr);
+#endif
 }
 
 void MP1Node::processJoinResponse(char *data) {
     // this node is now in the group
     memberNode->inGroup = true;
     
-    // "decode" each member list entry sent to you and add to your own member list
+    // decode each member list entry sent to you and add to your own member list
     size_t memOffset = sizeof(MessageHdr);
     
     size_t memberListSize;
@@ -512,7 +504,6 @@ void MP1Node::processJoinResponse(char *data) {
         int id;
         short port;
         long heartbeat;
-        long timestamp;
         
         memcpy(&id, data + memOffset, sizeof(int));
         memOffset += sizeof(int);
@@ -523,10 +514,6 @@ void MP1Node::processJoinResponse(char *data) {
         memcpy(&heartbeat, data + memOffset, sizeof(long));
         memOffset += sizeof(long);
         
-        memcpy(&timestamp, data + memOffset, sizeof(long));
-        memOffset += sizeof(long);
-        
-        // FIXME - probably don't need this timestamp variable at all, use this node's timeout counter
         MemberListEntry member(id, port, heartbeat, memberNode->timeOutCounter);
         memberNode->memberList.push_back(member);
         
@@ -588,7 +575,7 @@ void MP1Node::processHeartbeat(char *data) {
     
     
     
-    //        	// "decode" the heartbeat info sent to you
+    //        	// decode the heartbeat info sent to you
     //        	int id;
     //        	short port;
     //        	long heartbeat;
@@ -626,7 +613,7 @@ MemberListEntry* MP1Node::getMemberFromMemberList(int id) {
     MemberListEntry *foundEntry = nullptr;
     
     for (auto &memberListEntry : memberNode->memberList) {
-        if (memberListEntry.id == id) {
+        if (memberListEntry.getid() == id) {
             foundEntry = &memberListEntry;
             break;
         }
@@ -640,9 +627,9 @@ bool MP1Node::areAddressesEqual(Address *a1, Address *a2) {
 }
 
 int MP1Node::getRandomInteger(int begin, int end) {
-    std::random_device rd;  //Will be used to obtain a seed for the random number engine
-    std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
-    uniform_int_distribution<> dis(begin, end);
+    static std::random_device rd;  //Will be used to obtain a seed for the random number engine
+    static std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
+    std::uniform_int_distribution<> dis(begin, end);
     //Use dis to transform the random unsigned int generated by gen into an int in [begin, end]
     return dis(gen);
 }

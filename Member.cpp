@@ -62,10 +62,10 @@ MemberListEntry::MemberListEntry(const MemberListEntry &anotherMLE) {
  */
 MemberListEntry& MemberListEntry::operator =(const MemberListEntry &anotherMLE) {
 	MemberListEntry temp(anotherMLE);
-	swap(heartbeat, temp.heartbeat);
-	swap(id, temp.id);
-	swap(port, temp.port);
-	swap(timestamp, temp.timestamp);
+	std::swap(heartbeat, temp.heartbeat);
+	std::swap(id, temp.id);
+	std::swap(port, temp.port);
+	std::swap(timestamp, temp.timestamp);
 	return *this;
 }
 

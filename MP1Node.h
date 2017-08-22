@@ -14,9 +14,6 @@
 #include "Member.h"
 #include "EmulNet.h"
 #include "Queue.h"
-#include <random>
-#include <set>
-#include <algorithm>
 
 /**
  * Macros
@@ -71,6 +68,15 @@ private:
 	Address getMemberListEntryAddress(MemberListEntry *entry);
     Address getAddressFromIDAndPort(int id, short port);
     MemberListEntry* getMemberFromMemberList(int id);
+    
+    inline int getSelfId() {
+        return *(int *)(&memberNode->addr.addr);
+    }
+    
+    inline short getSelfPort() {
+        return *(short *)(&memberNode->addr.addr[4]);
+    }
+    
     bool areAddressesEqual(Address *a1, Address *a2);
     int getRandomInteger(int begin, int end);
 
