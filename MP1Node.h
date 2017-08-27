@@ -37,6 +37,17 @@ enum MsgTypes{
 };
 
 /**
+ * Failure Detection Protocol type
+ */
+enum FailureDetectionProtocol {
+    ALLTOALL,
+    PUSHGOSSIP,
+    PULLGOSSIP,
+    HYBRIDGOSSIP,
+    SWIM
+};
+
+/**
  * STRUCT NAME: MessageHdr
  *
  * DESCRIPTION: Header and content of a message
@@ -60,11 +71,17 @@ private:
     
     // Number of random nodes to send heartbeats to
     static const int gossipTargets;
+    
+    // The type of failure detection protocol to use
+    static const FailureDetectionProtocol protocol;
 
 	void processJoinRequest(char *data);
-	void processJoinResponse(char *data);
-	void processHeartbeat(char *data);
+    void updateMembershipList(char *data);
 
+    void allToAllBroadcast();
+    void pushGossipBroadcast();
+    size_t createHealthyMembershipListMsg(MessageHdr **msg, MsgTypes msgType);
+    
 	Address getMemberListEntryAddress(MemberListEntry *entry);
     Address getAddressFromIDAndPort(int id, short port);
     MemberListEntry* getMemberFromMemberList(int id);
@@ -77,8 +94,8 @@ private:
         return *(short *)(&memberNode->addr.addr[4]);
     }
     
-    bool areAddressesEqual(Address *a1, Address *a2);
     int getRandomInteger(int begin, int end);
+    size_t getNumberOfHealthyMembers();
 
 public:
 	MP1Node(Member *, Params *, EmulNet *, Log *, Address *);

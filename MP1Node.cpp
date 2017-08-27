@@ -11,7 +11,10 @@
  * Note: You can change/add any functions in MP1Node.{h,cpp}
  */
 
+// FIXME - DOCUMENTATION!!!
+
 const int MP1Node::gossipTargets = 2;
+const FailureDetectionProtocol MP1Node::protocol = PUSHGOSSIP;
 
 /**
  * Overloaded Constructor of the MP1Node class
@@ -159,6 +162,8 @@ int MP1Node::finishUpThisNode(){
     /*
      * Your code goes here
      */
+    memberNode->bFailed = true;
+    memberNode->inited = false;
     memberNode->inGroup = false;
     memberNode->nnb = 0;
     memberNode->heartbeat = 0;
@@ -233,10 +238,11 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
             processJoinRequest(data);
             break;
         case JOINREP:
-            processJoinResponse(data);
+            memberNode->inGroup = true;
+            updateMembershipList(data);
             break;
         case HEARTBEAT:
-            processHeartbeat(data);
+            updateMembershipList(data);
             break;
         default:
             messageProcessed = false;
@@ -265,85 +271,22 @@ void MP1Node::nodeLoopOps() {
         memberNode->pingCounter = TGOSSIP;
         memberNode->heartbeat++;
         
-        //                		for (auto &memberListEntry : memberNode->memberList) {
-        //                			// send heartbeat
-        //                			size_t msgsize = sizeof(MessageHdr) + sizeof(memberNode->addr.addr) + sizeof(long);
-        //                			MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
-        //                			msg->msgType = HEARTBEAT;
-        //
-        //                			memcpy((char*)(msg+1), &memberNode->addr.addr, sizeof(memberNode->addr.addr));
-        //                			size_t memOffset = sizeof(memberNode->addr.addr);
-        //                			memcpy((char*)(msg+1) + memOffset, &memberNode->heartbeat, sizeof(long));
-        //
-        //                			// Send HEARTBEAT message to destination node
-        //                            Address memberAddress = getMemberListEntryAddress(&memberListEntry);
-        //                			emulNet->ENsend(&memberNode->addr, &memberAddress, (char *)msg, msgsize);
-        //
-        //                			free(msg);
-        //                		}
-
-        std::set<int> randomIndices;
-        int maxRandIndices = std::min(gossipTargets, static_cast<int>(memberNode->memberList.size()) - 1);
-        while (static_cast<int>(randomIndices.size()) < maxRandIndices) {
-            // randomly get the index of your gossip target
-            int randIdx = getRandomInteger(0, memberNode->memberList.size() - 1);
-            if (memberNode->memberList[randIdx].getid() != getSelfId()) {
-                randomIndices.insert(randIdx);
-            }
+        switch (protocol) {
+            case ALLTOALL:
+                allToAllBroadcast();
+                break;
+            case PUSHGOSSIP:
+                pushGossipBroadcast();
+                break;
+            default:
+                break;
         }
-        
-        // FIXME - duplicated code with JOINREP send message
-        size_t msgsize = sizeof(MessageHdr) + sizeof(size_t);
-        size_t memOffset = sizeof(size_t); // reset memOffset for use in copying the memberList
-        msgsize += memberNode->memberList.size() * (sizeof(int) + sizeof(short) + sizeof(long));
-        MessageHdr *msg = (MessageHdr *) malloc(msgsize * sizeof(char));
-        
-        msg->msgType = HEARTBEAT;
-//        size_t memberListSize = memberNode->memberList.size();
-        size_t memberListSize = 0;
-        for (auto &memberListEntry: memberNode->memberList) {
-            if (memberNode->timeOutCounter - memberListEntry.gettimestamp() > TFAIL) {
-                continue;
-            }
-            ++memberListSize;
-        }
-        memcpy((char *)(msg+1), &memberListSize, sizeof(size_t));
-        
-        for (auto &memberListEntry: memberNode->memberList) {
-            if (memberNode->timeOutCounter - memberListEntry.gettimestamp() > TFAIL) {
-                continue;
-            }
-            
-            memcpy((char *)(msg+1) + memOffset, &memberListEntry.id, sizeof(int));
-            memOffset += sizeof(int);
-            
-            memcpy((char *)(msg+1) + memOffset, &memberListEntry.port, sizeof(short));
-            memOffset += sizeof(short);
-            
-            memcpy((char *)(msg+1) + memOffset, &memberListEntry.heartbeat, sizeof(long));
-            memOffset += sizeof(long);
-        }
-        
-        for (int idx : randomIndices) {
-            auto member = memberNode->memberList[idx];
-            
-            Address memberaddr = getMemberListEntryAddress(&member);
-            emulNet->ENsend(&memberNode->addr, &memberaddr, (char *)msg, msgsize);
-        }
-        
-        free(msg);
-        
-        
-        
     }
     
     for(auto it = memberNode->memberList.begin(); it != memberNode->memberList.end();) {
         if(memberNode->timeOutCounter - it->gettimestamp() > TREMOVE) {
 #ifdef DEBUGLOG
-            Address memberaddr;
-            memset(&memberaddr, 0, sizeof(Address));
-            *(int *)(&memberaddr.addr) = it->getid();
-            *(short *)(&memberaddr.addr[4]) = it->getport();
+            Address memberaddr = getAddressFromIDAndPort(it->getid(), it->getport());
             log->logNodeRemove(&memberNode->addr, &memberaddr);
 #endif
             it = memberNode->memberList.erase(it);
@@ -355,13 +298,61 @@ void MP1Node::nodeLoopOps() {
     
     memberNode->timeOutCounter++;
     
-    // Update myself in my own membership list so that I don't have to rely on others info about myself
+    // Update myself in my own membership list so that I don't have to rely on others for info about myself
     // Plus now I can't delete myself from my own list if I haven't heard about myself in a while
     MemberListEntry *self = getMemberFromMemberList(getSelfId());
     if (self) {
         self->setheartbeat(memberNode->heartbeat);
         self->settimestamp(memberNode->timeOutCounter);
     }
+}
+
+void MP1Node::allToAllBroadcast() {
+    size_t numMembersInMessage = 1; // needed for compatibility with push gossip heartbeat messages
+    for (auto &memberListEntry : memberNode->memberList) {
+        // create HEARTBEAT message: format of data is {struct MessageHdr + the number 1 + self data}
+        size_t msgsize = sizeof(MessageHdr) + sizeof(size_t) + sizeof(memberNode->addr.addr) + sizeof(long);
+        MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
+        msg->msgType = HEARTBEAT;
+        
+        memcpy((char *)(msg+1), &numMembersInMessage, sizeof(size_t));
+        size_t memOffset = sizeof(size_t);
+        
+        memcpy((char*)(msg+1) + memOffset, &memberNode->addr.addr, sizeof(memberNode->addr.addr));
+        memOffset += sizeof(memberNode->addr.addr);
+        
+        memcpy((char*)(msg+1) + memOffset, &memberNode->heartbeat, sizeof(long));
+        
+        // Send HEARTBEAT message to destination node
+        Address memberAddress = getMemberListEntryAddress(&memberListEntry);
+        emulNet->ENsend(&memberNode->addr, &memberAddress, (char *)msg, msgsize);
+        
+        free(msg);
+    }
+}
+
+void MP1Node::pushGossipBroadcast() {
+    std::set<int> randomIndices;
+    int maxRandIndices = std::min(gossipTargets, static_cast<int>(memberNode->memberList.size()) - 1);
+    while (static_cast<int>(randomIndices.size()) < maxRandIndices) {
+        // randomly get the index of your gossip target
+        int randIdx = getRandomInteger(0, memberNode->memberList.size() - 1);
+        if (memberNode->memberList[randIdx].getid() != getSelfId()) {
+            randomIndices.insert(randIdx);
+        }
+    }
+    
+    MessageHdr *msg = nullptr;
+    size_t msgsize = createHealthyMembershipListMsg(&msg, HEARTBEAT);
+    
+    for (int idx : randomIndices) {
+        MemberListEntry member = memberNode->memberList[idx];
+        
+        Address memberaddr = getMemberListEntryAddress(&member);
+        emulNet->ENsend(&memberNode->addr, &memberaddr, (char *)msg, msgsize);
+    }
+    
+    free(msg);
 }
 
 /**
@@ -450,26 +441,8 @@ void MP1Node::processJoinRequest(char *data) {
     
     memcpy(&heartbeat, data + memOffset, sizeof(long));
     
-    // create JOINREP message: format of data is {struct MessageHdr + memberList.size() + the member list}
-    size_t msgsize = sizeof(MessageHdr) + sizeof(size_t);
-    memOffset = sizeof(size_t); // reset memOffset for use in copying the memberList
-    msgsize += memberNode->memberList.size() * (sizeof(int) + sizeof(short) + sizeof(long));
-    MessageHdr *msg = (MessageHdr *) malloc(msgsize * sizeof(char));
-    
-    msg->msgType = JOINREP;
-    size_t memberListSize = memberNode->memberList.size();
-    memcpy((char *)(msg+1), &memberListSize, sizeof(size_t));
-    
-    for (auto &memberListEntry: memberNode->memberList) {
-        memcpy((char *)(msg+1) + memOffset, &memberListEntry.id, sizeof(int));
-        memOffset += sizeof(int);
-        
-        memcpy((char *)(msg+1) + memOffset, &memberListEntry.port, sizeof(short));
-        memOffset += sizeof(short);
-        
-        memcpy((char *)(msg+1) + memOffset, &memberListEntry.heartbeat, sizeof(long));
-        memOffset += sizeof(long);
-    }
+    MessageHdr *msg = nullptr;
+    size_t msgsize = createHealthyMembershipListMsg(&msg, JOINREP);
     
     MemberListEntry newEntry(id, port, heartbeat, memberNode->timeOutCounter);
     
@@ -488,44 +461,35 @@ void MP1Node::processJoinRequest(char *data) {
 #endif
 }
 
-void MP1Node::processJoinResponse(char *data) {
-    // this node is now in the group
-    memberNode->inGroup = true;
+size_t MP1Node::createHealthyMembershipListMsg(MessageHdr **msg, MsgTypes msgType) {
+    size_t numHealthyMembers = getNumberOfHealthyMembers();
+    size_t msgsize = sizeof(MessageHdr) + sizeof(size_t) + numHealthyMembers * (sizeof(int) + sizeof(short) + sizeof(long));
     
-    // decode each member list entry sent to you and add to your own member list
-    size_t memOffset = sizeof(MessageHdr);
+    // create message: format of data is {struct MessageHdr + num of healthy members + the member list}
+    *msg = (MessageHdr *) malloc(msgsize * sizeof(char)); // should be freed by caller
+    (*msg)->msgType = msgType;
+    memcpy((char *)(*msg+1), &numHealthyMembers, sizeof(size_t));
     
-    size_t memberListSize;
-    memcpy(&memberListSize, data + memOffset, sizeof(size_t));
-    
-    memOffset += sizeof(size_t);
-    
-    for (size_t i = 0; i != memberListSize; ++i) {
-        int id;
-        short port;
-        long heartbeat;
+    size_t memOffset = sizeof(size_t);
+    for (auto &memberListEntry: memberNode->memberList) {
+        if (memberNode->timeOutCounter - memberListEntry.gettimestamp() > TFAIL) {
+            continue;
+        }
         
-        memcpy(&id, data + memOffset, sizeof(int));
+        memcpy((char *)(*msg+1) + memOffset, &memberListEntry.id, sizeof(int));
         memOffset += sizeof(int);
         
-        memcpy(&port, data + memOffset, sizeof(short));
+        memcpy((char *)(*msg+1) + memOffset, &memberListEntry.port, sizeof(short));
         memOffset += sizeof(short);
         
-        memcpy(&heartbeat, data + memOffset, sizeof(long));
+        memcpy((char *)(*msg+1) + memOffset, &memberListEntry.heartbeat, sizeof(long));
         memOffset += sizeof(long);
-        
-        MemberListEntry member(id, port, heartbeat, memberNode->timeOutCounter);
-        memberNode->memberList.push_back(member);
-        
-#ifdef DEBUGLOG
-        Address memberAddress = getMemberListEntryAddress(&member);
-        log->logNodeAdd(&memberNode->addr, &memberAddress);
-#endif
     }
+    
+    return msgsize;
 }
 
-void MP1Node::processHeartbeat(char *data) {
-    // FIXME - getting duplicated code from processJoinResponse
+void MP1Node::updateMembershipList(char *data) {
     size_t memOffset = sizeof(MessageHdr);
     size_t memberListSize;
     memcpy(&memberListSize, data + memOffset, sizeof(size_t));
@@ -547,6 +511,7 @@ void MP1Node::processHeartbeat(char *data) {
         memOffset += sizeof(long);
         
         MemberListEntry *member = getMemberFromMemberList(id);
+        // update heartbeat for member node if it exists
         if (member && heartbeat > member->heartbeat) {
             member->setheartbeat(heartbeat);
             member->settimestamp(memberNode->timeOutCounter);
@@ -564,49 +529,6 @@ void MP1Node::processHeartbeat(char *data) {
             delete member;
         }
     }
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    //        	// decode the heartbeat info sent to you
-    //        	int id;
-    //        	short port;
-    //        	long heartbeat;
-    //        	size_t memOffset = sizeof(MessageHdr);
-    //
-    //        	memcpy(&id, data + memOffset, sizeof(int));
-    //        	memOffset += sizeof(int);
-    //
-    //        	memcpy(&port, data + memOffset, sizeof(short));
-    //        	memOffset += sizeof(short);
-    //
-    //        	memcpy(&heartbeat, data + memOffset, sizeof(long));
-    //
-    //        	// either update the sender node's heartbeat info if it exists in your member list
-    //        	MemberListEntry *sender = getMemberFromMemberList(id);
-    //        	if (sender) {
-    //        		sender->setheartbeat(heartbeat);
-    //        		sender->settimestamp(memberNode->timeOutCounter);
-    //        	}
-    //        	// or add it if it doesn't
-    //        	else {
-    //        		sender = new MemberListEntry(id, port, heartbeat, memberNode->timeOutCounter);
-    //        		memberNode->memberList.push_back(*sender);
-    //
-    //        #ifdef DEBUGLOG
-    //                Address senderAddress = getMemberListEntryAddress(sender);
-    //        		log->logNodeAdd(&memberNode->addr, &senderAddress);
-    //        #endif
-    //
-    //        		delete sender;
-    //        	}
 }
 
 MemberListEntry* MP1Node::getMemberFromMemberList(int id) {
@@ -622,14 +544,28 @@ MemberListEntry* MP1Node::getMemberFromMemberList(int id) {
     return foundEntry;
 }
 
-bool MP1Node::areAddressesEqual(Address *a1, Address *a2) {
-    return memcmp((char*)&(a1->addr), (char*)&(a2->addr), sizeof(a1->addr)) == 0;
+/**
+ * FUNCTION NAME: getRandomInteger
+ *
+ * DESCRIPTION: gets a random integer in the inclusive range [begin, end]
+ * DISCLAIMER: this was copied from a cppreference.com code snippet with minor modifications
+ * http://en.cppreference.com/w/cpp/numeric/random/uniform_int_distribution
+ */
+int MP1Node::getRandomInteger(int begin, int end) {
+    static std::random_device rd;  // Will be used to obtain a seed for the random number engine
+    static std::mt19937 gen(rd()); // Standard mersenne_twister_engine seeded with rd()
+    std::uniform_int_distribution<> dis(begin, end);
+    // Use dis to transform the random unsigned int generated by gen into an int in [begin, end]
+    return dis(gen);
 }
 
-int MP1Node::getRandomInteger(int begin, int end) {
-    static std::random_device rd;  //Will be used to obtain a seed for the random number engine
-    static std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
-    std::uniform_int_distribution<> dis(begin, end);
-    //Use dis to transform the random unsigned int generated by gen into an int in [begin, end]
-    return dis(gen);
+size_t MP1Node::getNumberOfHealthyMembers() {
+    size_t numHealthyMembers = 0;
+    for (auto &memberListEntry: memberNode->memberList) {
+        if (memberNode->timeOutCounter - memberListEntry.gettimestamp() > TFAIL) {
+            continue;
+        }
+        ++numHealthyMembers;
+    }
+    return numHealthyMembers;
 }
