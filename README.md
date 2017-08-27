@@ -1,4 +1,5 @@
 # Failure Detection Protocols
+
 ### Current protocols implemented:
   - all-to-all heartbeating
   - push gossip

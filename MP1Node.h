@@ -22,10 +22,6 @@
 #define TFAIL 20
 #define TGOSSIP 5
 
-/*
- * Note: You can change/add any functions in MP1Node.{h,cpp}
- */
-
 /**
  * Message Types
  */
@@ -54,7 +50,7 @@ enum FailureDetectionProtocol {
  * DESCRIPTION: Header and content of a message
  */
 typedef struct MessageHdr {
-	enum MsgTypes msgType;
+    enum MsgTypes msgType;
 }MessageHdr;
 
 /**
@@ -64,30 +60,20 @@ typedef struct MessageHdr {
  */
 class MP1Node {
 private:
-	EmulNet *emulNet;
-	Log *log;
-	Params *par;
-	Member *memberNode;
-	char NULLADDR[6];
+    EmulNet *emulNet;
+    Log *log;
+    Params *par;
+    Member *memberNode;
+    char NULLADDR[6];
+    
+    // Set to true when membership list is updated, false otherwise
+    bool hasUpdatesToGive;
     
     // Number of random nodes to send heartbeats to
     static const int gossipTargets;
     
     // The type of failure detection protocol to use
     static const FailureDetectionProtocol protocol;
-
-	void processJoinRequest(char *data);
-    void updateMembershipList(char *data);
-    void processPullRequest(char *data);
-
-    void allToAllBroadcast();
-    void pushGossipBroadcast();
-    void pullGossipBroadcast();
-    size_t createHealthyMembershipListMsg(MessageHdr **msg, MsgTypes msgType);
-    
-	Address getMemberListEntryAddress(MemberListEntry *entry);
-    Address getAddressFromIDAndPort(int id, short port);
-    MemberListEntry* getMemberFromMemberList(int id);
     
     inline int getSelfId() {
         return *(int *)(&memberNode->addr.addr);
@@ -97,29 +83,50 @@ private:
         return *(short *)(&memberNode->addr.addr[4]);
     }
     
-    int getRandomInteger(int begin, int end);
+    // Methods for processing messages
+    void processJoinRequest(char *data);
+    void updateMembershipList(char *data);
+    void processPullRequest(char *data);
+    
+    // Methods for sending membership info
+    void allToAllBroadcast();
+    void pushGossipBroadcast();
+    void pullGossipBroadcast();
+    
+    // Methods for tracking failed vs. healthy members
+    size_t removeFailedMembers();
     size_t getNumberOfHealthyMembers();
-
+    size_t createHealthyMembershipListMsg(MessageHdr **msg, MsgTypes msgType);
+    
+    // ID and Address methods
+    Address getMemberListEntryAddress(MemberListEntry *entry);
+    Address getAddressFromIDAndPort(int id, short port);
+    MemberListEntry* getMemberFromMemberList(int id);
+    
+    // Utility method
+    // FIXME - this method probably doesn't belong here
+    int getRandomInteger(int begin, int end);
+    
 public:
-	MP1Node(Member *, Params *, EmulNet *, Log *, Address *);
-	Member * getMemberNode() {
-		return memberNode;
-	}
-	int recvLoop();
-	static int enqueueWrapper(void *env, char *buff, int size);
-	void nodeStart(char *servaddrstr, short serverport);
-	int initThisNode(Address *joinaddr);
-	int introduceSelfToGroup(Address *joinAddress);
-	int finishUpThisNode();
-	void nodeLoop();
-	void checkMessages();
-	bool recvCallBack(void *env, char *data, int size);
-	void nodeLoopOps();
-	int isNullAddress(Address *addr);
-	Address getJoinAddress();
-	void initMemberListTable(Member *memberNode);
-	void printAddress(Address *addr);
-	virtual ~MP1Node();
+    MP1Node(Member *, Params *, EmulNet *, Log *, Address *);
+    Member * getMemberNode() {
+        return memberNode;
+    }
+    int recvLoop();
+    static int enqueueWrapper(void *env, char *buff, int size);
+    void nodeStart(char *servaddrstr, short serverport);
+    int initThisNode(Address *joinaddr);
+    int introduceSelfToGroup(Address *joinAddress);
+    int finishUpThisNode();
+    void nodeLoop();
+    void checkMessages();
+    bool recvCallBack(void *env, char *data, int size);
+    void nodeLoopOps();
+    int isNullAddress(Address *addr);
+    Address getJoinAddress();
+    void initMemberListTable(Member *memberNode);
+    void printAddress(Address *addr);
+    virtual ~MP1Node();
 };
 
 #endif /* _MP1NODE_H_ */
