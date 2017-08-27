@@ -33,6 +33,7 @@ enum MsgTypes{
     JOINREQ,
     JOINREP,
     HEARTBEAT,
+    PULLREQUEST,
     DUMMYLASTMSGTYPE
 };
 
@@ -77,9 +78,11 @@ private:
 
 	void processJoinRequest(char *data);
     void updateMembershipList(char *data);
+    void processPullRequest(char *data);
 
     void allToAllBroadcast();
     void pushGossipBroadcast();
+    void pullGossipBroadcast();
     size_t createHealthyMembershipListMsg(MessageHdr **msg, MsgTypes msgType);
     
 	Address getMemberListEntryAddress(MemberListEntry *entry);
