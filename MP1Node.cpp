@@ -224,19 +224,21 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
     MessageHdr receivedMessageHeader;
     memcpy(&receivedMessageHeader, data, sizeof(MessageHdr));
     
+    char *dataWithoutHeader = data + sizeof(MessageHdr);
+    
     switch (receivedMessageHeader.msgType) {
         case JOINREQ:
-            processJoinRequest(data);
+            processJoinRequest(dataWithoutHeader);
             break;
         case JOINREP:
             memberNode->inGroup = true;
-            updateMembershipList(data);
+            updateMembershipList(dataWithoutHeader);
             break;
         case HEARTBEAT:
-            updateMembershipList(data);
+            updateMembershipList(dataWithoutHeader);
             break;
         case PULLREQUEST:
-            processPullRequest(data);
+            processPullRequest(dataWithoutHeader);
             break;
         default:
             messageProcessed = false;
@@ -251,10 +253,9 @@ void MP1Node::processJoinRequest(char *data) {
     int id;
     short port;
     long heartbeat;
-    size_t memOffset = sizeof(MessageHdr);
     
-    memcpy(&id, data + memOffset, sizeof(int));
-    memOffset += sizeof(int);
+    memcpy(&id, data, sizeof(int));
+    size_t memOffset = sizeof(int);
     
     memcpy(&port, data + memOffset, sizeof(short));
     memOffset += sizeof(short);
@@ -285,11 +286,10 @@ void MP1Node::processJoinRequest(char *data) {
 void MP1Node::updateMembershipList(char *data) {
     hasUpdatesToGive = false;
     
-    size_t memOffset = sizeof(MessageHdr);
     size_t memberListSize;
-    memcpy(&memberListSize, data + memOffset, sizeof(size_t));
+    memcpy(&memberListSize, data, sizeof(size_t));
     
-    memOffset += sizeof(size_t);
+    size_t memOffset = sizeof(size_t);
     
     for (size_t i = 0; i != memberListSize; ++i) {
         int id;
@@ -334,22 +334,16 @@ void MP1Node::processPullRequest(char *data) {
     }
     
     int id;
+    memcpy(&id, data, sizeof(int));
+    
     short port;
-    size_t memOffset = sizeof(MessageHdr);
+    memcpy(&port, data + sizeof(int), sizeof(short));
     
-    memcpy(&id, data + memOffset, sizeof(int));
-    memOffset += sizeof(int);
-    
-    memcpy(&port, data + memOffset, sizeof(short));
-    
-    MemberListEntry *member = getMemberFromMemberList(id);
-    if (member) {
-        MessageHdr *msg = nullptr;
-        size_t msgsize = createHealthyMembershipListMsg(&msg, HEARTBEAT);
-        Address memberAddress = getMemberListEntryAddress(member);
-        emulNet->ENsend(&memberNode->addr, &memberAddress, (char *)msg, msgsize);
-        free(msg);
-    }
+    Address memberAddress = getAddressFromIDAndPort(id, port);
+    MessageHdr *msg = nullptr;
+    size_t msgsize = createHealthyMembershipListMsg(&msg, HEARTBEAT);
+    emulNet->ENsend(&memberNode->addr, &memberAddress, (char *)msg, msgsize);
+    free(msg);
 }
 
 /**
