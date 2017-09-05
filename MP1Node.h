@@ -18,8 +18,8 @@
 /**
  * Macros
  */
-#define TREMOVE 50
-#define TFAIL 20
+#define TREMOVE 20
+#define TFAIL 10
 #define TGOSSIP 5
 
 /**
@@ -30,7 +30,14 @@ enum MsgTypes{
     JOINREP,
     HEARTBEAT,
     PULLREQUEST,
-    DUMMYLASTMSGTYPE
+    
+    // SWIM message types
+    PING,
+    ACK,
+    PINGTOSURROGATE,
+    PINGFROMSURROGATE,
+    ACKTOSURROGATE,
+    ACKFROMSURROGATE
 };
 
 /**
@@ -40,7 +47,6 @@ enum FailureDetectionProtocol {
     ALLTOALL,
     PUSHGOSSIP,
     PULLGOSSIP,
-    HYBRIDGOSSIP,
     SWIM
 };
 
@@ -69,8 +75,11 @@ private:
     // Set to true when membership list is updated, false otherwise
     bool hasUpdatesToGive;
     
-    // Number of random nodes to send heartbeats to
-    static const int gossipTargets;
+    // Map to keep track of pinged nodes when using SWIM protocol
+    std::unordered_map<int, int> pingedNodes;
+    
+    // Number of random nodes to send gossip heartbeats or indirect SWIM pings to
+    static const int numTargetMembers;
     
     // The type of failure detection protocol to use
     static const FailureDetectionProtocol protocol;
@@ -87,11 +96,18 @@ private:
     void processJoinRequest(char *data);
     void updateMembershipList(char *data);
     void processPullRequest(char *data);
+    void processPing(char *data);
+    void processAck(char *data);
+    void processPingToSurrogate(char *data);
+    void processPingFromSurrogate(char *data);
+    void processAckToSurrogate(char *data);
+    void processAckFromSurrogate(char *data);
     
     // Methods for sending membership info
     void allToAllBroadcast();
     void pushGossipBroadcast();
     void pullGossipBroadcast();
+    void pingRandomNode();
     
     // Methods for tracking failed vs. healthy members
     size_t removeFailedMembers();
@@ -122,10 +138,8 @@ public:
     void checkMessages();
     bool recvCallBack(void *env, char *data, int size);
     void nodeLoopOps();
-    int isNullAddress(Address *addr);
     Address getJoinAddress();
     void initMemberListTable(Member *memberNode);
-    void printAddress(Address *addr);
     virtual ~MP1Node();
 };
 

@@ -6,7 +6,6 @@
   - pull gossip
 
 ### Upcoming protocols:
-  - hybrid (push-pull) gossip
   - SWIM
 
 ### Todo:

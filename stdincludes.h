@@ -36,7 +36,8 @@
 #include <queue>
 #include <fstream>
 #include <random>
-#include <set>
+#include <unordered_map>
+#include <unordered_set>
 
 #define STDCLLBKARGS (void *env, char *data, int size)
 #define STDCLLBKRET	void

@@ -9,8 +9,8 @@
 
 // TODO - DOCUMENTATION!!!
 
-const int MP1Node::gossipTargets = 2;
-const FailureDetectionProtocol MP1Node::protocol = PULLGOSSIP;
+const int MP1Node::numTargetMembers = 2;
+const FailureDetectionProtocol MP1Node::protocol = SWIM;
 
 /**
  * Overloaded Constructor of the MP1Node class
@@ -240,6 +240,24 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
         case PULLREQUEST:
             processPullRequest(dataWithoutHeader);
             break;
+        case PING:
+            processPing(dataWithoutHeader);
+            break;
+        case ACK:
+            processAck(dataWithoutHeader);
+            break;
+        case PINGTOSURROGATE:
+            processPingToSurrogate(dataWithoutHeader);
+            break;
+        case PINGFROMSURROGATE:
+            processPingFromSurrogate(dataWithoutHeader);
+            break;
+        case ACKTOSURROGATE:
+            processAckToSurrogate(dataWithoutHeader);
+            break;
+        case ACKFROMSURROGATE:
+            processAckFromSurrogate(dataWithoutHeader);
+            break;
         default:
             messageProcessed = false;
             break;
@@ -339,11 +357,203 @@ void MP1Node::processPullRequest(char *data) {
     short port;
     memcpy(&port, data + sizeof(int), sizeof(short));
     
-    Address memberAddress = getAddressFromIDAndPort(id, port);
     MessageHdr *msg = nullptr;
     size_t msgsize = createHealthyMembershipListMsg(&msg, HEARTBEAT);
+    
+    Address memberAddress = getAddressFromIDAndPort(id, port);
     emulNet->ENsend(&memberNode->addr, &memberAddress, (char *)msg, msgsize);
+    
     free(msg);
+}
+
+void MP1Node::processPing(char *data) {
+    int id;
+    memcpy(&id, data, sizeof(int));
+    
+    short port;
+    memcpy(&port, data + sizeof(int), sizeof(short));
+    
+    Address pingerAddress = getAddressFromIDAndPort(id, port);
+    
+    MemberListEntry *pinger = getMemberFromMemberList(id);
+    if (!pinger) {
+//        pinger = new MemberListEntry(id, port, memberNode->timeOutCounter, memberNode->timeOutCounter);
+        memberNode->memberList.push_back(MemberListEntry(id, port, memberNode->timeOutCounter, memberNode->timeOutCounter));
+        
+#ifdef DEBUGLOG
+        log->logNodeAdd(&memberNode->addr, &pingerAddress);
+#endif
+    }
+    
+    size_t msgsize = sizeof(MessageHdr) + sizeof(memberNode->addr.addr);
+    MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
+    msg->msgType = ACK;
+    memcpy((char*)(msg+1), &memberNode->addr.addr, sizeof(int));
+    
+    emulNet->ENsend(&memberNode->addr, &pingerAddress, (char *)msg, msgsize);
+    
+    free(msg);
+}
+
+void MP1Node::processAck(char *data) {
+    int id;
+    memcpy(&id, data, sizeof(int));
+    
+    auto it = pingedNodes.find(id);
+    if (it != pingedNodes.end()) {
+        pingedNodes.erase(it);
+    }
+}
+
+void MP1Node::processPingToSurrogate(char *data) {
+    //    std::unordered_set<int> randomIndices;
+    //    int maxRandIndices = std::min(numTargetMembers, static_cast<int>(memberNode->memberList.size()) - 1);
+    //    while (static_cast<int>(randomIndices.size()) < maxRandIndices) {
+    //        // randomly get the index of your gossip target
+    //        int randIdx = getRandomInteger(0, memberNode->memberList.size() - 1);
+    //        MemberListEntry randomNode = memberNode->memberList[randIdx];
+    //        if (memberNode->memberList[randIdx].getid() != getSelfId() && pingedNodes.find(randomNode.getid()) == pingedNodes.end()) {
+    //            randomIndices.insert(randIdx);
+    //        }
+    //    }
+    
+    int pingerID;
+    memcpy(&pingerID, data, sizeof(int));
+    size_t memOffset = sizeof(int);
+    
+    short pingerPort;
+    memcpy(&pingerPort, data + memOffset, sizeof(short));
+    memOffset += sizeof(short);
+    
+    int pingeeID;
+    memcpy(&pingeeID, data + memOffset, sizeof(int));
+    memOffset += sizeof(int);
+    
+    short pingeePort;
+    memcpy(&pingeePort, data + sizeof(int), sizeof(short));
+    
+    Address pingerAddress = getAddressFromIDAndPort(pingerID, pingerPort);
+    Address pingeeAddress = getAddressFromIDAndPort(pingeeID, pingeePort);
+    
+    // FIXME - duplicated code with MP1Node::processPing
+    MemberListEntry *pinger = getMemberFromMemberList(pingerID);
+    if (!pinger) {
+//        *pinger = MemberListEntry(pingerID, pingerPort, memberNode->timeOutCounter, memberNode->timeOutCounter);
+        memberNode->memberList.push_back(MemberListEntry(pingerID, pingerPort, memberNode->timeOutCounter, memberNode->timeOutCounter));
+        
+#ifdef DEBUGLOG
+        log->logNodeAdd(&memberNode->addr, &pingerAddress);
+#endif
+    }
+    
+    size_t msgsize = sizeof(MessageHdr) + 2 * sizeof(memberNode->addr.addr);
+    MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
+    msg->msgType = PINGFROMSURROGATE;
+    memcpy((char*)(msg+1), &memberNode->addr.addr, sizeof(memberNode->addr.addr));
+    memcpy((char*)(msg+1), &pingerAddress.addr, sizeof(pingerAddress.addr));
+    
+    emulNet->ENsend(&memberNode->addr, &pingeeAddress, (char *)msg, msgsize);
+    
+    free(msg);
+}
+
+void MP1Node::processPingFromSurrogate(char *data) {
+    // FIXME - code duplicated between this and MP1Node::processPingToSurrogate
+    int surrogateID;
+    memcpy(&surrogateID, data, sizeof(int));
+    size_t memOffset = sizeof(int);
+    
+    short surrogatePort;
+    memcpy(&surrogatePort, data + memOffset, sizeof(short));
+    memOffset += sizeof(short);
+    
+    int origPingerID;
+    memcpy(&origPingerID, data + memOffset, sizeof(int));
+    memOffset += sizeof(int);
+    
+    short origPingerPort;
+    memcpy(&origPingerPort, data + sizeof(int), sizeof(short));
+    
+    Address surrogateAddress = getAddressFromIDAndPort(surrogateID, surrogatePort);
+    Address origPingerAddress = getAddressFromIDAndPort(origPingerID, origPingerPort);
+    
+    // FIXME - duplicated code with MP1Node::processPing
+    MemberListEntry *pinger = getMemberFromMemberList(origPingerID);
+    if (!pinger) {
+//        *pinger = MemberListEntry(origPingerID, origPingerPort, memberNode->timeOutCounter, memberNode->timeOutCounter);
+        memberNode->memberList.push_back(MemberListEntry(origPingerID, origPingerPort, memberNode->timeOutCounter, memberNode->timeOutCounter));
+        
+#ifdef DEBUGLOG
+        log->logNodeAdd(&memberNode->addr, &origPingerAddress);
+#endif
+    }
+    
+    // FIXME - duplicated code with MP1Node::processPing
+    MemberListEntry *surrogate = getMemberFromMemberList(surrogateID);
+    if (!surrogate) {
+//        *surrogate = MemberListEntry(surrogateID, surrogatePort, memberNode->timeOutCounter, memberNode->timeOutCounter);
+        memberNode->memberList.push_back(MemberListEntry(surrogateID, surrogatePort, memberNode->timeOutCounter, memberNode->timeOutCounter));
+        
+#ifdef DEBUGLOG
+        log->logNodeAdd(&memberNode->addr, &surrogateAddress);
+#endif
+    }
+    
+    size_t msgsize = sizeof(MessageHdr) + 2 * sizeof(memberNode->addr.addr);
+    MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
+    msg->msgType = ACKTOSURROGATE;
+    memcpy((char*)(msg+1), &memberNode->addr.addr, sizeof(memberNode->addr.addr));
+    memcpy((char*)(msg+1), &origPingerAddress.addr, sizeof(origPingerAddress.addr));
+    
+    emulNet->ENsend(&memberNode->addr, &surrogateAddress, (char *)msg, msgsize);
+    
+    free(msg);
+}
+
+void MP1Node::processAckToSurrogate(char *data) {
+    // FIXME - code duplicated between this and MP1Node::processPingToSurrogate
+    int pingeeID;
+    memcpy(&pingeeID, data, sizeof(int));
+    size_t memOffset = sizeof(int);
+    
+    short pingeePort;
+    memcpy(&pingeePort, data + memOffset, sizeof(short));
+    memOffset += sizeof(short);
+    
+    int pingerID;
+    memcpy(&pingerID, data + memOffset, sizeof(int));
+    memOffset += sizeof(int);
+    
+    short pingerPort;
+    memcpy(&pingerPort, data + sizeof(int), sizeof(short));
+    
+    Address pingeeAddress = getAddressFromIDAndPort(pingeeID, pingeePort);
+    Address pingerAddress = getAddressFromIDAndPort(pingerID, pingerPort);
+    
+    // FIXME - duplicated code with MP1Node::processPing
+    MemberListEntry *pingee = getMemberFromMemberList(pingeeID);
+    if (!pingee) {
+//        *pingee = MemberListEntry(pingeeID, pingeePort, memberNode->timeOutCounter, memberNode->timeOutCounter);
+        memberNode->memberList.push_back(MemberListEntry(pingeeID, pingeePort, memberNode->timeOutCounter, memberNode->timeOutCounter));
+        
+#ifdef DEBUGLOG
+        log->logNodeAdd(&memberNode->addr, &pingeeAddress);
+#endif
+    }
+    
+    size_t msgsize = sizeof(MessageHdr) + sizeof(pingeeAddress.addr);
+    MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
+    msg->msgType = ACKFROMSURROGATE;
+    memcpy((char*)(msg+1), &pingeeAddress.addr, sizeof(pingeeAddress));
+    
+    emulNet->ENsend(&memberNode->addr, &pingerAddress, (char *)msg, msgsize);
+    
+    free(msg);
+}
+
+void MP1Node::processAckFromSurrogate(char *data) {
+    // FIXME - this shouldn't be a method, just use MP1Node::processAck in the abvoe switch statement
+    processAck(data);
 }
 
 /**
@@ -371,12 +581,79 @@ void MP1Node::nodeLoopOps() {
             case PULLGOSSIP:
                 pullGossipBroadcast();
                 break;
+            case SWIM:
+                pingRandomNode();
+                break;
             default:
                 break;
         }
     }
     
-    removeFailedMembers();
+    
+    
+    
+    for(auto it = memberNode->memberList.begin(); it != memberNode->memberList.end();) {
+        auto mapIt = pingedNodes.find(it->getid());
+        if (mapIt == pingedNodes.end()) {
+            ++it;
+            continue;
+        }
+        if(memberNode->timeOutCounter - mapIt->second > TREMOVE) {
+            pingedNodes.erase(mapIt);
+#ifdef DEBUGLOG
+            Address memberAddress = getAddressFromIDAndPort(it->getid(), it->getport());
+            log->logNodeRemove(&memberNode->addr, &memberAddress);
+#endif
+            it = memberNode->memberList.erase(it);
+        }
+        else if (memberNode->timeOutCounter - mapIt->second > TFAIL) {
+            std::unordered_set<int> randomIndices;
+            int maxRandIndices = std::min(numTargetMembers, static_cast<int>(memberNode->memberList.size()) - 1 - static_cast<int>(pingedNodes.size()));
+            while (static_cast<int>(randomIndices.size()) < maxRandIndices) {
+                // randomly get the index of your gossip target
+                int randIdx = getRandomInteger(0, memberNode->memberList.size() - 1);
+                MemberListEntry randomNode = memberNode->memberList[randIdx];
+                if (memberNode->memberList[randIdx].getid() != getSelfId() && pingedNodes.find(randomNode.getid()) == pingedNodes.end()) {
+                    randomIndices.insert(randIdx);
+                }
+            }
+            
+            
+            size_t msgsize = sizeof(MessageHdr) + 2 * sizeof(memberNode->addr.addr);
+            MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
+            msg->msgType = PINGTOSURROGATE;
+            memcpy((char*)(msg+1), &memberNode->addr.addr, sizeof(memberNode->addr.addr));
+            
+            Address pingeeAddress = getAddressFromIDAndPort(it->getid(), it->getport());
+            memcpy((char*)(msg+1), &pingeeAddress.addr, sizeof(pingeeAddress.addr));
+            
+            for (int idx : randomIndices) {
+                MemberListEntry member = memberNode->memberList[idx];
+                
+                Address memberAddress = getMemberListEntryAddress(&member);
+                emulNet->ENsend(&memberNode->addr, &memberAddress, (char *)msg, msgsize);
+            }
+            
+            free(msg);
+            
+            ++it;
+            continue;
+            
+            
+        }
+        else {
+            ++it;
+            continue;
+        }
+    }
+    
+    
+    
+    
+    
+    
+    
+//    removeFailedMembers();
     
     memberNode->timeOutCounter++;
     
@@ -414,8 +691,8 @@ void MP1Node::allToAllBroadcast() {
 }
 
 void MP1Node::pushGossipBroadcast() {
-    std::set<int> randomIndices;
-    int maxRandIndices = std::min(gossipTargets, static_cast<int>(memberNode->memberList.size()) - 1);
+    std::unordered_set<int> randomIndices;
+    int maxRandIndices = std::min(numTargetMembers, static_cast<int>(memberNode->memberList.size()) - 1);
     while (static_cast<int>(randomIndices.size()) < maxRandIndices) {
         // randomly get the index of your gossip target
         int randIdx = getRandomInteger(0, memberNode->memberList.size() - 1);
@@ -438,8 +715,8 @@ void MP1Node::pushGossipBroadcast() {
 }
 
 void MP1Node::pullGossipBroadcast() {
-    std::set<int> randomIndices;
-    int maxRandIndices = std::min(gossipTargets, static_cast<int>(memberNode->memberList.size()) - 1);
+    std::unordered_set<int> randomIndices;
+    int maxRandIndices = std::min(numTargetMembers, static_cast<int>(memberNode->memberList.size()) - 1);
     while (static_cast<int>(randomIndices.size()) < maxRandIndices) {
         // randomly get the index of your gossip target
         int randIdx = getRandomInteger(0, memberNode->memberList.size() - 1);
@@ -463,13 +740,29 @@ void MP1Node::pullGossipBroadcast() {
     free(msg);
 }
 
-/**
- * FUNCTION NAME: isNullAddress
- *
- * DESCRIPTION: Function checks if the address is NULL
- */
-int MP1Node::isNullAddress(Address *addr) {
-    return (memcmp(addr->addr, NULLADDR, 6) == 0 ? 1 : 0);
+void MP1Node::pingRandomNode() {
+    if (memberNode->memberList.size() < 2 || memberNode->memberList.size() - pingedNodes.size() < 2) {
+        return;
+    }
+    
+    int randIdx;
+    MemberListEntry randomNode;
+    do {
+        randIdx = getRandomInteger(0, memberNode->memberList.size());
+        randomNode = memberNode->memberList[randIdx];
+    } while (randomNode.getid() == getSelfId() || pingedNodes.find(randomNode.getid()) != pingedNodes.end());
+    
+    size_t msgsize = sizeof(MessageHdr) + sizeof(memberNode->addr.addr);
+    MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
+    msg->msgType = PING;
+    memcpy((char*)(msg+1), &memberNode->addr.addr, sizeof(memberNode->addr.addr));
+    
+    Address randomAndress = getMemberListEntryAddress(&randomNode);
+    emulNet->ENsend(&memberNode->addr, &randomAndress, (char *)msg, msgsize);
+    
+    pingedNodes[randomNode.getid()] = memberNode->timeOutCounter;
+    
+    free(msg);
 }
 
 /**
@@ -521,17 +814,6 @@ void MP1Node::initMemberListTable(Member *memberNode) {
 #ifdef DEBUGLOG
     log->logNodeAdd(&memberNode->addr, &memberNode->addr);
 #endif
-}
-
-/**
- * FUNCTION NAME: printAddress
- *
- * DESCRIPTION: Print the Address
- */
-void MP1Node::printAddress(Address *addr)
-{
-    printf("%d.%d.%d.%d:%d \n",  addr->addr[0],addr->addr[1],addr->addr[2],
-           addr->addr[3], *(short*)&addr->addr[4]) ;
 }
 
 size_t MP1Node::removeFailedMembers() {
