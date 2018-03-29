@@ -51,6 +51,16 @@ enum FailureDetectionProtocol {
 };
 
 /**
+ * STRUCT NAME: MembershipUpdate
+ *
+ * DESCRIPTION: Keeps track of how many times information about a node was disseminated
+ */
+struct MembershipUpdate {
+    size_t count;
+    MemberListEntry node;
+};
+
+/**
  * STRUCT NAME: MessageHdr
  *
  * DESCRIPTION: Header and content of a message
@@ -77,6 +87,10 @@ private:
     
     // Map to keep track of pinged nodes when using SWIM protocol
     std::unordered_map<int, int> pingedNodes;
+    
+    // Buffers to keep track of membership updates and how many times they have been disseminated
+    std::vector<MembershipUpdate> joinedNodeBuffer;
+    std::vector<MembershipUpdate> failedNodeBuffer;
     
     // Number of random nodes to send gossip heartbeats or indirect SWIM pings to
     static const int numTargetMembers;
@@ -108,6 +122,11 @@ private:
     void pushGossipBroadcast();
     void pullGossipBroadcast();
     void pingRandomNode();
+    
+    void cleanBuffer(std::vector<MembershipUpdate>& buffer);
+    void incrementBufferCounts(std::vector<MembershipUpdate>& buffer);
+    MembershipUpdate* getUpdateFromBuffer(std::vector<MembershipUpdate>& buffer, int nodeId);
+    void addNodeToBuffer(std::vector<MembershipUpdate>& buffer, MemberListEntry& node);
     
     // Methods for tracking failed vs. healthy members
     size_t removeFailedMembers();
