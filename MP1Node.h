@@ -21,6 +21,8 @@
 #define TREMOVE 20
 #define TFAIL 10
 #define TGOSSIP 5
+#define TARGETMEMBERS 2
+#define BUFFERTHRESHOLD 10
 
 /**
  * Message Types
@@ -92,9 +94,6 @@ private:
     std::vector<MembershipUpdate> joinedNodeBuffer;
     std::vector<MembershipUpdate> failedNodeBuffer;
     
-    // Number of random nodes to send gossip heartbeats or indirect SWIM pings to
-    static const int numTargetMembers;
-    
     // The type of failure detection protocol to use
     static const FailureDetectionProtocol protocol;
     
@@ -123,10 +122,12 @@ private:
     void pullGossipBroadcast();
     void pingRandomNode();
     
+    // TODO - comment these
     void cleanBuffer(std::vector<MembershipUpdate>& buffer);
     void incrementBufferCounts(std::vector<MembershipUpdate>& buffer);
     MembershipUpdate* getUpdateFromBuffer(std::vector<MembershipUpdate>& buffer, int nodeId);
     void addNodeToBuffer(std::vector<MembershipUpdate>& buffer, MemberListEntry& node);
+    void addBufferInfoToMessage(MessageHdr **msg, size_t offset);
     
     // Methods for tracking failed vs. healthy members
     size_t removeFailedMembers();
@@ -143,8 +144,8 @@ private:
     int getRandomInteger(int begin, int end);
     
 public:
-    MP1Node(Member *, Params *, EmulNet *, Log *, Address *);
-    Member * getMemberNode() {
+    MP1Node(Member*, Params*, EmulNet*, Log*, Address*);
+    inline Member* getMemberNode() {
         return memberNode;
     }
     int recvLoop();
@@ -158,7 +159,7 @@ public:
     bool recvCallBack(void *env, char *data, int size);
     void nodeLoopOps();
     Address getJoinAddress();
-    void initMemberListTable(Member *memberNode);
+    void initMemberListTable();
     virtual ~MP1Node();
 };
 
