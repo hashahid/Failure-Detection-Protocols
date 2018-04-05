@@ -17,16 +17,11 @@ const FailureDetectionProtocol MP1Node::protocol = SWIM;
  * You can add new members to the class if you think it
  * is necessary for your logic to work
  */
-MP1Node::MP1Node(Member *member, Params *params, EmulNet *emul, Log *log, Address *address) {
-    for( int i = 0; i < 6; i++ ) {
-        NULLADDR[i] = 0;
-    }
+MP1Node::MP1Node(Member *member, EmulNet *emul, Log *log, Address *address) {
     this->memberNode = member;
     this->emulNet = emul;
     this->log = log;
-    this->par = params;
     this->memberNode->addr = *address;
-    
     this->hasUpdatesToGive = false;
 }
 
@@ -46,7 +41,7 @@ int MP1Node::recvLoop() {
         return false;
     }
     else {
-        return emulNet->ENrecv(&(this->memberNode->addr), enqueueWrapper, NULL, 1, &(this->memberNode->mp1q));
+        return this->emulNet->ENrecv(&(this->memberNode->addr), enqueueWrapper, NULL, 1, &(this->memberNode->mp1q));
     }
 }
 
@@ -74,7 +69,7 @@ void MP1Node::nodeStart(char *servaddrstr, short servport) {
     // Self booting routines
     if( initThisNode(&joinaddr) == -1 ) {
 #ifdef DEBUGLOG
-        log->LOG(&(this->memberNode->addr), "init_thisnode failed. Exit.");
+        this->log->LOG(&(this->memberNode->addr), "init_thisnode failed. Exit.");
 #endif
         exit(1);
     }
@@ -82,7 +77,7 @@ void MP1Node::nodeStart(char *servaddrstr, short servport) {
     if( !introduceSelfToGroup(&joinaddr) ) {
         finishUpThisNode();
 #ifdef DEBUGLOG
-        log->LOG(&(this->memberNode->addr), "Unable to join self to group. Exiting.");
+        this->log->LOG(&(this->memberNode->addr), "Unable to join self to group. Exiting.");
 #endif
         exit(1);
     }
@@ -116,14 +111,11 @@ int MP1Node::initThisNode(Address *joinaddr) {
  */
 int MP1Node::introduceSelfToGroup(Address *joinaddr) {
     MessageHdr *msg;
-#ifdef DEBUGLOG
-    static char s[1024];
-#endif
     
     if ( 0 == memcmp((char *)&(this->memberNode->addr.addr), (char *)&(joinaddr->addr), sizeof(this->memberNode->addr.addr))) {
         // I am the group booter (first process to join the group). Boot up the group
 #ifdef DEBUGLOG
-        log->LOG(&(this->memberNode->addr), "Starting up group...");
+        this->log->LOG(&(this->memberNode->addr), "Starting up group...");
 #endif
         this->memberNode->inGroup = true;
     }
@@ -137,18 +129,16 @@ int MP1Node::introduceSelfToGroup(Address *joinaddr) {
         memcpy((char *)(msg+1) + 1 + sizeof(this->memberNode->addr.addr), &(this->memberNode->heartbeat), sizeof(long));
         
 #ifdef DEBUGLOG
-        sprintf(s, "Trying to join...");
-        log->LOG(&(this->memberNode->addr), s);
+        this->log->LOG(&(this->memberNode->addr), "Trying to join...");
 #endif
         
         // send JOINREQ message to introducer member
-        emulNet->ENsend(&(this->memberNode->addr), joinaddr, (char *)msg, msgsize);
+        this->emulNet->ENsend(&(this->memberNode->addr), joinaddr, (char *)msg, msgsize);
         
         free(msg);
     }
     
     return 1;
-    
 }
 
 /**
@@ -286,22 +276,22 @@ void MP1Node::processJoinRequest(char *data) {
     Address newEntryAddr = getMemberListEntryAddress(&newEntry);
     
     // send JOINREP message to new member
-    emulNet->ENsend(&(this->memberNode->addr), &newEntryAddr, (char *)msg, msgsize);
+    this->emulNet->ENsend(&(this->memberNode->addr), &newEntryAddr, (char *)msg, msgsize);
     
     free(msg);
     
     // add to your own member list and update buffer
     this->memberNode->memberList.emplace_back(newEntry);
     addNodeToBuffer(this->joinedNodeBuffer, newEntry);
-    hasUpdatesToGive = true;
+    this->hasUpdatesToGive = true;
     
 #ifdef DEBUGLOG
-    log->logNodeAdd(&(this->memberNode->addr), &newEntryAddr);
+    this->log->logNodeAdd(&(this->memberNode->addr), &newEntryAddr);
 #endif
 }
 
 void MP1Node::updateMembershipList(char *data) {
-    hasUpdatesToGive = false;
+    this->hasUpdatesToGive = false;
     
     size_t memberListSize;
     memcpy(&memberListSize, data, sizeof(size_t));
@@ -322,31 +312,12 @@ void MP1Node::updateMembershipList(char *data) {
         memcpy(&heartbeat, data + offset, sizeof(long));
         offset += sizeof(long);
         
-        MemberListEntry *member = getMemberFromMemberList(id);
-        // update heartbeat for member node if it exists
-        if (member && heartbeat > member->heartbeat) {
-            member->setheartbeat(heartbeat);
-            member->settimestamp(this->memberNode->timeOutCounter);
-            hasUpdatesToGive = true;
-        }
-        // or add it if it doesn't
-        else if (!member) {
-            member = new MemberListEntry(id, port, heartbeat, this->memberNode->timeOutCounter);
-            this->memberNode->memberList.emplace_back(*member);
-            
-#ifdef DEBUGLOG
-            Address memberAddress = getMemberListEntryAddress(member);
-            log->logNodeAdd(&(this->memberNode->addr), &memberAddress);
-#endif
-            
-            delete member;
-            hasUpdatesToGive = true;
-        }
+        updateNodeInMembershipList(id, port, heartbeat, false);
     }
 }
 
 void MP1Node::processPullRequest(char *data) {
-    if (!hasUpdatesToGive) {
+    if (!this->hasUpdatesToGive) {
         return;
     }
     
@@ -360,7 +331,7 @@ void MP1Node::processPullRequest(char *data) {
     size_t msgsize = createHealthyMembershipListMsg(&msg, HEARTBEAT);
     
     Address memberAddress = getAddressFromIDAndPort(id, port);
-    emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
+    this->emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
     
     free(msg);
 }
@@ -376,6 +347,14 @@ void MP1Node::processPing(char *data) {
     
     Address pingerAddress = getAddressFromIDAndPort(id, port);
     
+    MemberListEntry *pinger = getMemberFromMemberList(id);
+    if (!pinger) {
+        this->memberNode->memberList.emplace_back(MemberListEntry(id, port, this->memberNode->timeOutCounter, this->memberNode->timeOutCounter));
+        
+#ifdef DEBUGLOG
+        this->log->logNodeAdd(&(this->memberNode->addr), &pingerAddress);
+#endif
+    }
 
     
     
@@ -389,7 +368,7 @@ void MP1Node::processPing(char *data) {
     
     addBufferInfoToMessage(&msg, sizeof(int));
     
-    emulNet->ENsend(&(this->memberNode->addr), &pingerAddress, (char *)msg, msgsize);
+    this->emulNet->ENsend(&(this->memberNode->addr), &pingerAddress, (char *)msg, msgsize);
     
     free(msg);
     
@@ -412,33 +391,7 @@ void MP1Node::processPing(char *data) {
         memcpy(&node, data + offset, sizeof(MemberListEntry));
         offset += sizeof(MemberListEntry);
         
-        // FIXME - this code was copied from the updateMembershipList method. It needs to be refactored into its own method.
-        MemberListEntry *nodeFromList = getMemberFromMemberList(node.getid());
-        // update heartbeat for member node if it exists
-        if (nodeFromList && node.getheartbeat() > nodeFromList->heartbeat) {
-            nodeFromList->setheartbeat(node.getheartbeat());
-            nodeFromList->settimestamp(this->memberNode->timeOutCounter);
-            
-            addNodeToBuffer(this->joinedNodeBuffer, *nodeFromList);
-        }
-        // or add it if it doesn't
-        else if (!nodeFromList) {
-            MembershipUpdate *updateFromBuffer = getUpdateFromBuffer(this->failedNodeBuffer, node.getid());
-            if (updateFromBuffer && updateFromBuffer->node.getheartbeat() > node.getheartbeat()) {
-                continue;
-            }
-            nodeFromList = new MemberListEntry(node.getid(), node.getport(), node.getheartbeat(), this->memberNode->timeOutCounter);
-            this->memberNode->memberList.emplace_back(*nodeFromList);
-            
-            addNodeToBuffer(this->joinedNodeBuffer, *nodeFromList);
-            
-#ifdef DEBUGLOG
-            Address nodeAddress = getMemberListEntryAddress(nodeFromList);
-            log->logNodeAdd(&(this->memberNode->addr), &nodeAddress);
-#endif
-            
-            delete nodeFromList;
-        }
+        updateNodeInMembershipList(node.getid(), node.getport(), node.getheartbeat(), true);
     }
     
     memcpy(&bufferSize, data + offset, sizeof(size_t));
@@ -453,7 +406,7 @@ void MP1Node::processPing(char *data) {
             if (it->id == node.getid() && node.getheartbeat() > it->heartbeat) {
 #ifdef DEBUGLOG
                 Address memberAddress = getAddressFromIDAndPort(it->getid(), it->getport());
-                log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
+                this->log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
 #endif
                 addNodeToBuffer(this->failedNodeBuffer, *it);
                 
@@ -469,9 +422,9 @@ void MP1Node::processAck(char *data) {
     int id;
     memcpy(&id, data, sizeof(int));
     
-    auto it = pingedNodes.find(id);
-    if (it != pingedNodes.end()) {
-        pingedNodes.erase(it);
+    auto it = this->pingedNodes.find(id);
+    if (it != this->pingedNodes.end()) {
+        this->pingedNodes.erase(it);
     }
     
     size_t offset = sizeof(int);
@@ -485,33 +438,7 @@ void MP1Node::processAck(char *data) {
         memcpy(&node, data + offset, sizeof(MemberListEntry));
         offset += sizeof(MemberListEntry);
         
-        // FIXME - this code was copied from the updateMembershipList method. It needs to be refactored into its own method.
-        MemberListEntry *nodeFromList = getMemberFromMemberList(node.getid());
-        // update heartbeat for member node if it exists
-        if (nodeFromList && node.getheartbeat() > nodeFromList->heartbeat) {
-            nodeFromList->setheartbeat(node.getheartbeat());
-            nodeFromList->settimestamp(this->memberNode->timeOutCounter);
-            
-            addNodeToBuffer(this->joinedNodeBuffer, *nodeFromList);
-        }
-        // or add it if it doesn't
-        else if (!nodeFromList) {
-            MembershipUpdate *updateFromBuffer = getUpdateFromBuffer(this->failedNodeBuffer, node.getid());
-            if (updateFromBuffer && updateFromBuffer->node.getheartbeat() > node.getheartbeat()) {
-                continue;
-            }
-            nodeFromList = new MemberListEntry(node.getid(), node.getport(), node.getheartbeat(), this->memberNode->timeOutCounter);
-            this->memberNode->memberList.emplace_back(*nodeFromList);
-            
-            addNodeToBuffer(this->joinedNodeBuffer, *nodeFromList);
-            
-#ifdef DEBUGLOG
-            Address nodeAddress = getMemberListEntryAddress(nodeFromList);
-            log->logNodeAdd(&(this->memberNode->addr), &nodeAddress);
-#endif
-            
-            delete nodeFromList;
-        }
+        updateNodeInMembershipList(node.getid(), node.getport(), node.getheartbeat(), true);
     }
     
     memcpy(&bufferSize, data + offset, sizeof(size_t));
@@ -526,7 +453,7 @@ void MP1Node::processAck(char *data) {
             if (it->id == node.getid() && node.getheartbeat() > it->heartbeat) {
 #ifdef DEBUGLOG
                 Address memberAddress = getAddressFromIDAndPort(it->getid(), it->getport());
-                log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
+                this->log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
 #endif
                 addNodeToBuffer(this->failedNodeBuffer, *it);
                 
@@ -557,14 +484,13 @@ void MP1Node::processPingToSurrogate(char *data) {
     
     Address pingerAddress = getAddressFromIDAndPort(pingerID, pingerPort);
     Address pingeeAddress = getAddressFromIDAndPort(pingeeID, pingeePort);
-    
-    // FIXME - duplicated code with MP1Node::processPing
+
     MemberListEntry *pinger = getMemberFromMemberList(pingerID);
     if (!pinger) {
         this->memberNode->memberList.emplace_back(MemberListEntry(pingerID, pingerPort, this->memberNode->timeOutCounter, this->memberNode->timeOutCounter));
         
 #ifdef DEBUGLOG
-        log->logNodeAdd(&(this->memberNode->addr), &pingerAddress);
+        this->log->logNodeAdd(&(this->memberNode->addr), &pingerAddress);
 #endif
     }
     
@@ -591,7 +517,7 @@ void MP1Node::processPingToSurrogate(char *data) {
     
     memcpy((char*)(msg+1) + offset, data + 2 * sizeof(int) + 2 * sizeof(short), 2 * sizeof(size_t) + (joinedBufferSize + failedBufferSize) * sizeof(MemberListEntry));
     
-    emulNet->ENsend(&(this->memberNode->addr), &pingeeAddress, (char *)msg, msgsize);
+    this->emulNet->ENsend(&(this->memberNode->addr), &pingeeAddress, (char *)msg, msgsize);
     
     free(msg);
 }
@@ -622,7 +548,7 @@ void MP1Node::processPingFromSurrogate(char *data) {
         this->memberNode->memberList.emplace_back(MemberListEntry(surrogateID, surrogatePort, this->memberNode->timeOutCounter, this->memberNode->timeOutCounter));
         
 #ifdef DEBUGLOG
-        log->logNodeAdd(&(this->memberNode->addr), &surrogateAddress);
+        this->log->logNodeAdd(&(this->memberNode->addr), &surrogateAddress);
 #endif
     }
     
@@ -645,7 +571,7 @@ void MP1Node::processPingFromSurrogate(char *data) {
     
     addBufferInfoToMessage(&msg, offset);
 
-    emulNet->ENsend(&(this->memberNode->addr), &surrogateAddress, (char *)msg, msgsize);
+    this->emulNet->ENsend(&(this->memberNode->addr), &surrogateAddress, (char *)msg, msgsize);
     
     free(msg);
     
@@ -674,33 +600,7 @@ void MP1Node::processPingFromSurrogate(char *data) {
         memcpy(&node, data + offset, sizeof(MemberListEntry));
         offset += sizeof(MemberListEntry);
         
-        // FIXME - this code was copied from the updateMembershipList method. It needs to be refactored into its own method.
-        MemberListEntry *nodeFromList = getMemberFromMemberList(node.getid());
-        // update heartbeat for member node if it exists
-        if (nodeFromList && node.getheartbeat() > nodeFromList->heartbeat) {
-            nodeFromList->setheartbeat(node.getheartbeat());
-            nodeFromList->settimestamp(this->memberNode->timeOutCounter);
-            
-            addNodeToBuffer(this->joinedNodeBuffer, *nodeFromList);
-        }
-        // or add it if it doesn't
-        else if (!nodeFromList) {
-            MembershipUpdate *updateFromBuffer = getUpdateFromBuffer(this->failedNodeBuffer, node.getid());
-            if (updateFromBuffer && updateFromBuffer->node.getheartbeat() > node.getheartbeat()) {
-                continue;
-            }
-            nodeFromList = new MemberListEntry(node.getid(), node.getport(), node.getheartbeat(), this->memberNode->timeOutCounter);
-            this->memberNode->memberList.emplace_back(*nodeFromList);
-            
-            addNodeToBuffer(this->joinedNodeBuffer, *nodeFromList);
-            
-#ifdef DEBUGLOG
-            Address nodeAddress = getMemberListEntryAddress(nodeFromList);
-            log->logNodeAdd(&(this->memberNode->addr), &nodeAddress);
-#endif
-            
-            delete nodeFromList;
-        }
+        updateNodeInMembershipList(node.getid(), node.getport(), node.getheartbeat(), true);
     }
     
     memcpy(&bufferSize, data + offset, sizeof(size_t));
@@ -715,7 +615,7 @@ void MP1Node::processPingFromSurrogate(char *data) {
             if (it->id == node.getid() && node.getheartbeat() > it->heartbeat) {
 #ifdef DEBUGLOG
                 Address memberAddress = getAddressFromIDAndPort(it->getid(), it->getport());
-                log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
+                this->log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
 #endif
                 addNodeToBuffer(this->failedNodeBuffer, *it);
                 
@@ -725,21 +625,6 @@ void MP1Node::processPingFromSurrogate(char *data) {
             }
         }
     }
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-
 }
 
 void MP1Node::processAckToSurrogate(char *data) {
@@ -769,7 +654,7 @@ void MP1Node::processAckToSurrogate(char *data) {
         this->memberNode->memberList.emplace_back(MemberListEntry(pingeeID, pingeePort, this->memberNode->timeOutCounter, this->memberNode->timeOutCounter));
         
 #ifdef DEBUGLOG
-        log->logNodeAdd(&(this->memberNode->addr), &pingeeAddress);
+        this->log->logNodeAdd(&(this->memberNode->addr), &pingeeAddress);
 #endif
     }
     
@@ -801,7 +686,7 @@ void MP1Node::processAckToSurrogate(char *data) {
     
     memcpy((char*)(msg+1) + offset, data + 2 * sizeof(int) + 2 * sizeof(short), 2 * sizeof(size_t) + (joinedBufferSize + failedBufferSize) * sizeof(MemberListEntry));
     
-    emulNet->ENsend(&(this->memberNode->addr), &pingerAddress, (char *)msg, msgsize);
+    this->emulNet->ENsend(&(this->memberNode->addr), &pingerAddress, (char *)msg, msgsize);
     
     free(msg);
 }
@@ -842,106 +727,104 @@ void MP1Node::nodeLoopOps() {
     
     
     // TODO: Possible if statement here. If SWIM, do this for loop. Else removeFailedMembers()
-    for(auto it = this->memberNode->memberList.begin(); it != this->memberNode->memberList.end();) {
-        auto mapIt = pingedNodes.find(it->getid());
-        if (mapIt == pingedNodes.end()) {
-            ++it;
-            continue;
-        }
-        // pinged node has failed, remove it
-        if(this->memberNode->timeOutCounter - mapIt->second > TREMOVE) {
-            pingedNodes.erase(mapIt);
+    if (MP1Node::protocol == SWIM) {
+        for(auto it = this->memberNode->memberList.begin(); it != this->memberNode->memberList.end();) {
+            auto mapIt = this->pingedNodes.find(it->getid());
+            if (mapIt == this->pingedNodes.end()) {
+                ++it;
+                continue;
+            }
+            // pinged node has failed, remove it
+            if(this->memberNode->timeOutCounter - mapIt->second > TREMOVE) {
+                this->pingedNodes.erase(mapIt);
 #ifdef DEBUGLOG
-            Address memberAddress = getAddressFromIDAndPort(it->getid(), it->getport());
-            log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
+                Address memberAddress = getAddressFromIDAndPort(it->getid(), it->getport());
+                this->log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
 #endif
-            addNodeToBuffer(this->failedNodeBuffer, *it);
-            it = this->memberNode->memberList.erase(it);
-        }
-        // pinged node is taking too long to reply. try to reach it via another node
-        else if (this->memberNode->timeOutCounter - mapIt->second > TFAIL) {
-            std::unordered_set<int> randomIndices;
-            int maxRandIndices = std::min(TARGETMEMBERS, static_cast<int>(this->memberNode->memberList.size()) - 1 - static_cast<int>(pingedNodes.size()));
-            while (static_cast<int>(randomIndices.size()) < maxRandIndices) {
-                // randomly get the index of your gossip target
-                int randIdx = getRandomInteger(0, this->memberNode->memberList.size() - 1);
-                MemberListEntry randomNode = this->memberNode->memberList[randIdx];
-                if (this->memberNode->memberList[randIdx].getid() != getSelfId() && pingedNodes.find(randomNode.getid()) == pingedNodes.end()) {
-                    randomIndices.insert(randIdx);
+                addNodeToBuffer(this->failedNodeBuffer, *it);
+                it = this->memberNode->memberList.erase(it);
+            }
+            // pinged node is taking too long to reply. try to reach it via another node
+            else if (this->memberNode->timeOutCounter - mapIt->second > TFAIL) {
+                std::unordered_set<int> randomIndices;
+                int maxRandIndices = std::min(TARGETMEMBERS, static_cast<int>(this->memberNode->memberList.size()) - 1 - static_cast<int>(this->pingedNodes.size()));
+                while (static_cast<int>(randomIndices.size()) < maxRandIndices) {
+                    // randomly get the index of your gossip target
+                    int randIdx = getRandomInteger(0, this->memberNode->memberList.size() - 1);
+                    MemberListEntry randomNode = this->memberNode->memberList[randIdx];
+                    if (this->memberNode->memberList[randIdx].getid() != getSelfId() && this->pingedNodes.find(randomNode.getid()) == this->pingedNodes.end()) {
+                        randomIndices.insert(randIdx);
+                    }
                 }
-            }
-            
-            
-            size_t msgsize = sizeof(MessageHdr) + 2 * sizeof(this->memberNode->addr.addr) + 2 * sizeof(size_t) + (this->joinedNodeBuffer.size() + this->failedNodeBuffer.size()) * sizeof(MemberListEntry);
-            MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
-            msg->msgType = PINGTOSURROGATE;
-            memcpy((char*)(msg+1), &(this->memberNode->addr.addr), sizeof(this->memberNode->addr.addr));
-            size_t offset = sizeof(this->memberNode->addr.addr);
-            
-            Address pingeeAddress = getAddressFromIDAndPort(it->getid(), it->getport());
-            memcpy((char*)(msg+1) + offset, &pingeeAddress.addr, sizeof(pingeeAddress.addr));
-            offset += sizeof(pingeeAddress.addr);
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            addBufferInfoToMessage(&msg, offset);
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            for (int idx : randomIndices) {
-                MemberListEntry member = this->memberNode->memberList[idx];
                 
-                Address memberAddress = getMemberListEntryAddress(&member);
-                emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
+                
+                size_t msgsize = sizeof(MessageHdr) + 2 * sizeof(this->memberNode->addr.addr) + 2 * sizeof(size_t) + (this->joinedNodeBuffer.size() + this->failedNodeBuffer.size()) * sizeof(MemberListEntry);
+                MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
+                msg->msgType = PINGTOSURROGATE;
+                memcpy((char*)(msg+1), &(this->memberNode->addr.addr), sizeof(this->memberNode->addr.addr));
+                size_t offset = sizeof(this->memberNode->addr.addr);
+                
+                Address pingeeAddress = getAddressFromIDAndPort(it->getid(), it->getport());
+                memcpy((char*)(msg+1) + offset, &pingeeAddress.addr, sizeof(pingeeAddress.addr));
+                offset += sizeof(pingeeAddress.addr);
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                addBufferInfoToMessage(&msg, offset);
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                for (int idx : randomIndices) {
+                    MemberListEntry member = this->memberNode->memberList[idx];
+                    
+                    Address memberAddress = getMemberListEntryAddress(&member);
+                    this->emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
+                }
+                
+                free(msg);
+                
+                ++it;
             }
-            
-            free(msg);
-            
-            ++it;
+            else {
+                ++it;
+            }
         }
-        else {
-            ++it;
-        }
+        cleanBuffer(this->joinedNodeBuffer);
+        cleanBuffer(this->failedNodeBuffer);
+    } else {
+        removeFailedMembers();
     }
-    cleanBuffer(this->joinedNodeBuffer);
-    cleanBuffer(this->failedNodeBuffer);
-    
-    
-    
-    
-    
-//    removeFailedMembers();
     
     this->memberNode->timeOutCounter++;
     
@@ -972,7 +855,7 @@ void MP1Node::allToAllBroadcast() {
         
         // Send HEARTBEAT message to destination node
         Address memberAddress = getMemberListEntryAddress(&memberListEntry);
-        emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
+        this->emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
         
         free(msg);
     }
@@ -996,7 +879,7 @@ void MP1Node::pushGossipBroadcast() {
         MemberListEntry member = this->memberNode->memberList[idx];
         
         Address memberAddress = getMemberListEntryAddress(&member);
-        emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
+        this->emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
     }
     
     free(msg);
@@ -1022,14 +905,14 @@ void MP1Node::pullGossipBroadcast() {
         MemberListEntry member = this->memberNode->memberList[idx];
         
         Address memberAddress = getMemberListEntryAddress(&member);
-        emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
+        this->emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
     }
     
     free(msg);
 }
 
 void MP1Node::pingRandomNode() {
-    if (this->memberNode->memberList.size() < 2 || this->memberNode->memberList.size() - pingedNodes.size() < 2) {
+    if (this->memberNode->memberList.size() < 2 || this->memberNode->memberList.size() - this->pingedNodes.size() < 2) {
         return;
     }
     
@@ -1038,7 +921,7 @@ void MP1Node::pingRandomNode() {
     do {
         randIdx = getRandomInteger(0, this->memberNode->memberList.size());
         randomNode = this->memberNode->memberList[randIdx];
-    } while (randomNode.getid() == getSelfId() || pingedNodes.find(randomNode.getid()) != pingedNodes.end());
+    } while (randomNode.getid() == getSelfId() || this->pingedNodes.find(randomNode.getid()) != this->pingedNodes.end());
     
     size_t msgsize = sizeof(MessageHdr) + sizeof(this->memberNode->addr.addr) + 2 * sizeof(size_t) + (this->joinedNodeBuffer.size() + this->failedNodeBuffer.size()) * sizeof(MemberListEntry);
     MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
@@ -1048,9 +931,9 @@ void MP1Node::pingRandomNode() {
     addBufferInfoToMessage(&msg, sizeof(this->memberNode->addr.addr));
     
     Address randomAndress = getMemberListEntryAddress(&randomNode);
-    emulNet->ENsend(&(this->memberNode->addr), &randomAndress, (char *)msg, msgsize);
+    this->emulNet->ENsend(&(this->memberNode->addr), &randomAndress, (char *)msg, msgsize);
     
-    pingedNodes[randomNode.getid()] = this->memberNode->timeOutCounter;
+    this->pingedNodes[randomNode.getid()] = this->memberNode->timeOutCounter;
     incrementBufferCounts(this->joinedNodeBuffer);
     incrementBufferCounts(this->failedNodeBuffer);
     
@@ -1140,7 +1023,7 @@ void MP1Node::initMemberListTable() {
     this->memberNode->memberList.emplace_back(self);
     
 #ifdef DEBUGLOG
-    log->logNodeAdd(&(this->memberNode->addr), &(this->memberNode->addr));
+    this->log->logNodeAdd(&(this->memberNode->addr), &(this->memberNode->addr));
 #endif
 }
 
@@ -1151,7 +1034,7 @@ size_t MP1Node::removeFailedMembers() {
         if(this->memberNode->timeOutCounter - it->gettimestamp() > TREMOVE) {
 #ifdef DEBUGLOG
             Address memberAddress = getAddressFromIDAndPort(it->getid(), it->getport());
-            log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
+            this->log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
 #endif
             it = this->memberNode->memberList.erase(it);
         }
@@ -1216,18 +1099,6 @@ MemberListEntry* MP1Node::getMemberFromMemberList(int id) {
     return foundEntry;
 }
 
-MembershipUpdate* MP1Node::getUpdateFromBuffer(std::vector<MembershipUpdate>& buffer, int nodeId) {
-    MembershipUpdate *foundUpdate = nullptr;
-    
-    for (auto &update : buffer) {
-        if (update.node.getid() == nodeId) {
-            foundUpdate = &update;
-            break;
-        }
-    }
-    return foundUpdate;
-}
-
 void MP1Node::addNodeToBuffer(std::vector<MembershipUpdate>& buffer, MemberListEntry& node) {
     for (auto it = buffer.begin(); it != buffer.end();) {
         if (it->node.getid() == node.getid()) {
@@ -1242,6 +1113,36 @@ void MP1Node::addNodeToBuffer(std::vector<MembershipUpdate>& buffer, MemberListE
     update.node = node;
     update.count = 0;
     buffer.emplace_back(update);
+}
+
+void MP1Node::updateNodeInMembershipList(int nodeId, short port, long heartbeat, bool updateBuffer) {
+    bool membershipListUpdated = false;
+    MemberListEntry *member = getMemberFromMemberList(nodeId);
+    // update heartbeat for member node if it exists
+    if (member && heartbeat > member->heartbeat) {
+        member->setheartbeat(heartbeat);
+        member->settimestamp(this->memberNode->timeOutCounter);
+        membershipListUpdated = true;
+    }
+    // or add it if it doesn't
+    else if (!member) {
+        member = new MemberListEntry(nodeId, port, heartbeat, this->memberNode->timeOutCounter);
+        this->memberNode->memberList.emplace_back(*member);
+        
+#ifdef DEBUGLOG
+        Address memberAddress = getMemberListEntryAddress(member);
+        this->log->logNodeAdd(&(this->memberNode->addr), &memberAddress);
+#endif
+        
+        delete member;
+        membershipListUpdated = true;
+    }
+    
+    if (updateBuffer && membershipListUpdated) {
+        addNodeToBuffer(this->joinedNodeBuffer, *member);
+    } else if (membershipListUpdated) {
+        this->hasUpdatesToGive = true;
+    }
 }
 
 /**

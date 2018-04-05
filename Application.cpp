@@ -63,7 +63,7 @@ Application::Application(char *infile) {
 		Address joinaddr;
 		joinaddr = getjoinaddr();
 		addressOfMemberNode = (Address *) en->ENinit(addressOfMemberNode, par->PORTNUM);
-		mp1[i] = new MP1Node(memberNode, par, en, log, addressOfMemberNode);
+		mp1[i] = new MP1Node(memberNode, en, log, addressOfMemberNode);
 		log->LOG(&(mp1[i]->getMemberNode()->addr), "APP");
 		delete addressOfMemberNode;
 	}

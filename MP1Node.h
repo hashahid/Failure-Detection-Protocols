@@ -80,9 +80,7 @@ class MP1Node {
 private:
     EmulNet *emulNet;
     Log *log;
-    Params *par;
     Member *memberNode;
-    char NULLADDR[6];
     
     // Set to true when membership list is updated, false otherwise
     bool hasUpdatesToGive;
@@ -122,10 +120,12 @@ private:
     void pullGossipBroadcast();
     void pingRandomNode();
     
+    // TODO - comment this
+    void updateNodeInMembershipList(int nodeId, short port, long heartbeat, bool updateBuffer);
+    
     // TODO - comment these
     void cleanBuffer(std::vector<MembershipUpdate>& buffer);
     void incrementBufferCounts(std::vector<MembershipUpdate>& buffer);
-    MembershipUpdate* getUpdateFromBuffer(std::vector<MembershipUpdate>& buffer, int nodeId);
     void addNodeToBuffer(std::vector<MembershipUpdate>& buffer, MemberListEntry& node);
     void addBufferInfoToMessage(MessageHdr **msg, size_t offset);
     
@@ -144,7 +144,7 @@ private:
     int getRandomInteger(int begin, int end);
     
 public:
-    MP1Node(Member*, Params*, EmulNet*, Log*, Address*);
+    MP1Node(Member*, EmulNet*, Log*, Address*);
     inline Member* getMemberNode() {
         return memberNode;
     }
