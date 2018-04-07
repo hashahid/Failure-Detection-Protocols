@@ -109,9 +109,8 @@ private:
     void processPullRequest(char *data);
     void processPing(char *data);
     void processAck(char *data);
-    void processPingToSurrogate(char *data);
     void processPingFromSurrogate(char *data);
-    void processAckToSurrogate(char *data);
+    void processMessageToSurrogate(char *data, bool fromPinger);
     void processAckFromSurrogate(char *data);
     
     // Methods for sending membership info
@@ -123,11 +122,15 @@ private:
     // TODO - comment this
     void updateNodeInMembershipList(int nodeId, short port, long heartbeat, bool updateBuffer);
     
+    // TODO - comment this
+    size_t prepareMessageForSurrogate(MessageHdr **msg, MsgTypes msgType, Address& pinger, Address& pingee);
+    
     // TODO - comment these
     void cleanBuffer(std::vector<MembershipUpdate>& buffer);
     void incrementBufferCounts(std::vector<MembershipUpdate>& buffer);
     void addNodeToBuffer(std::vector<MembershipUpdate>& buffer, MemberListEntry& node);
     void addBufferInfoToMessage(MessageHdr **msg, size_t offset);
+    void readBufferInfoFromMessage(char *data, size_t offset);
     
     // Methods for tracking failed vs. healthy members
     size_t removeFailedMembers();
@@ -138,6 +141,7 @@ private:
     Address getMemberListEntryAddress(MemberListEntry *entry);
     Address getAddressFromIDAndPort(int id, short port);
     MemberListEntry* getMemberFromMemberList(int id);
+    void ensureNodePresenceInList(int id, short port);
     
     // Utility method
     // FIXME - this method probably doesn't belong here
