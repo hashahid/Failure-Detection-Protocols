@@ -89,7 +89,7 @@ private:
     std::unordered_map<int, int> pingedNodes;
     
     // Buffers to keep track of membership updates and how many times they have been disseminated
-    std::vector<MembershipUpdate> joinedNodeBuffer;
+    std::vector<MembershipUpdate> updatedNodeBuffer;
     std::vector<MembershipUpdate> failedNodeBuffer;
     
     // The type of failure detection protocol to use
@@ -119,26 +119,23 @@ private:
     void pullGossipBroadcast();
     void pingRandomNode();
     
-    // TODO - comment this
-    void updateNodeInMembershipList(int nodeId, short port, long heartbeat, bool updateBuffer);
-    
-    // TODO - comment this
+    // Construct a message to send to the surrogate pinger
     size_t prepareMessageForSurrogate(MessageHdr **msg, MsgTypes msgType, Address& pinger, Address& pingee);
     
-    // TODO - comment these
+    // Methods for managing and processing membership update buffers
     void cleanBuffer(std::vector<MembershipUpdate>& buffer);
     void incrementBufferCounts(std::vector<MembershipUpdate>& buffer);
     void addNodeToBuffer(std::vector<MembershipUpdate>& buffer, MemberListEntry& node);
     void addBufferInfoToMessage(MessageHdr **msg, size_t offset);
     void readBufferInfoFromMessage(char *data, size_t offset);
     
-    // Methods for tracking failed vs. healthy members
-    size_t removeFailedMembers();
+    // Methods for managing the membership list
+    void removeFailedMembers();
     size_t getNumberOfHealthyMembers();
     size_t createHealthyMembershipListMsg(MessageHdr **msg, MsgTypes msgType);
+    void updateNodeInMembershipList(int nodeId, short port, long heartbeat);
     
     // ID and Address methods
-    Address getMemberListEntryAddress(MemberListEntry *entry);
     Address getAddressFromIDAndPort(int id, short port);
     MemberListEntry* getMemberFromMemberList(int id);
     void ensureNodePresenceInList(int id, short port);
@@ -162,7 +159,6 @@ public:
     void checkMessages();
     bool recvCallBack(void *env, char *data, int size);
     void nodeLoopOps();
-    Address getJoinAddress();
     void initMemberListTable();
     virtual ~MP1Node();
 };
