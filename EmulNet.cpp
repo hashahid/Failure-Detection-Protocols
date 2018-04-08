@@ -137,11 +137,8 @@ int EmulNet::ENsend(Address *myaddr, Address *toaddr, std::string data) {
  * FUNCTION NAME: ENrecv
  *
  * DESCRIPTION: EmulNet receive function
- *
- * RETURN:
- * 0
  */
-int EmulNet::ENrecv(Address *myaddr, int (* enq)(void *, char *, int), struct timeval *t, int times, void *queue){
+void EmulNet::ENrecv(Address *myaddr, int (* enq)(void *, char *, int), struct timeval *t, int times, void *queue){
 	// times is always assumed to be 1
 	int i;
 	char* tmp;
@@ -172,8 +169,6 @@ int EmulNet::ENrecv(Address *myaddr, int (* enq)(void *, char *, int), struct ti
 			recv_msgs[dst][time]++;
 		}
 	}
-
-	return 0;
 }
 
 /**

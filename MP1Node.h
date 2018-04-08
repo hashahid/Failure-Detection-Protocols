@@ -18,8 +18,8 @@
 /**
  * Macros
  */
-#define TREMOVE 20
-#define TFAIL 10
+#define TREMOVE 50
+#define TFAIL 20
 #define TGOSSIP 5
 #define TARGETMEMBERS 2
 #define BUFFERTHRESHOLD 10
@@ -77,6 +77,17 @@ typedef struct MessageHdr {
  * DESCRIPTION: Class implementing Membership protocol functionalities for failure detection
  */
 class MP1Node {
+public:
+    MP1Node(Member*, EmulNet*, Log*, Address*);
+    void nodeStart(char *servaddrstr, short serverport);
+    void recvLoop();
+    void nodeLoop();
+    void finishUpThisNode();
+    inline Member* getMemberNode() {
+        return memberNode;
+    }
+    virtual ~MP1Node();
+    
 private:
     EmulNet *emulNet;
     Log *log;
@@ -92,9 +103,6 @@ private:
     std::vector<MembershipUpdate> updatedNodeBuffer;
     std::vector<MembershipUpdate> failedNodeBuffer;
     
-    // The type of failure detection protocol to use
-    static const FailureDetectionProtocol protocol;
-    
     inline int getSelfId() {
         return *(int *)(&memberNode->addr.addr);
     }
@@ -103,64 +111,55 @@ private:
         return *(short *)(&memberNode->addr.addr[4]);
     }
     
-    // Methods for processing messages
+    // The type of failure detection protocol to use
+    static const FailureDetectionProtocol protocol;
+    
+    // Methods for managing node lifecycle and high level function
+    int initThisNode(Address *joinaddr);
+    void initMemberListTable();
+    int introduceSelfToGroup(Address *joinAddress);
+    static int enqueueWrapper(void *env, char *buff, int size);
+    void checkMessages();
+    bool recvCallBack(void *env, char *data, int size);
+    void nodeLoopOps();
+    
+    // Methods for processing messages common to all protocols
     void processJoinRequest(char *data);
     void updateMembershipList(char *data);
-    void processPullRequest(char *data);
+    // Methods for sending and processing SWIM protocol messages
+    void pingRandomNode();
     void processPing(char *data);
     void processAck(char *data);
-    void processPingFromSurrogate(char *data);
+    size_t prepareMessageForSurrogate(MessageHdr **msg, MsgTypes msgType, Address& pinger, Address& pingee);
     void processMessageToSurrogate(char *data, bool fromPinger);
-    void processAckFromSurrogate(char *data);
-    
-    // Methods for sending membership info
+    void processPingFromSurrogate(char *data);
+    // Methods for sending and processing heartbeat-sending protocol messages
     void allToAllBroadcast();
     void pushGossipBroadcast();
     void pullGossipBroadcast();
-    void pingRandomNode();
-    
-    // Construct a message to send to the surrogate pinger
-    size_t prepareMessageForSurrogate(MessageHdr **msg, MsgTypes msgType, Address& pinger, Address& pingee);
+    void processPullRequest(char *data);
     
     // Methods for managing and processing membership update buffers
-    void cleanBuffer(std::vector<MembershipUpdate>& buffer);
-    void incrementBufferCounts(std::vector<MembershipUpdate>& buffer);
     void addNodeToBuffer(std::vector<MembershipUpdate>& buffer, MemberListEntry& node);
     void addBufferInfoToMessage(MessageHdr **msg, size_t offset);
+    void incrementBufferCounts(std::vector<MembershipUpdate>& buffer);
+    void cleanBuffer(std::vector<MembershipUpdate>& buffer);
     void readBufferInfoFromMessage(char *data, size_t offset);
     
     // Methods for managing the membership list
-    void removeFailedMembers();
+    void ensureNodePresenceInList(int id, short port);
+    void updateNodeInMembershipList(int nodeId, short port, long heartbeat);
     size_t getNumberOfHealthyMembers();
     size_t createHealthyMembershipListMsg(MessageHdr **msg, MsgTypes msgType);
-    void updateNodeInMembershipList(int nodeId, short port, long heartbeat);
+    void removeFailedMembers();
     
     // ID and Address methods
-    Address getAddressFromIDAndPort(int id, short port);
     MemberListEntry* getMemberFromMemberList(int id);
-    void ensureNodePresenceInList(int id, short port);
+    Address getAddressFromIDAndPort(int id, short port);
     
     // Utility method
     // FIXME - this method probably doesn't belong here
     int getRandomInteger(int begin, int end);
-    
-public:
-    MP1Node(Member*, EmulNet*, Log*, Address*);
-    inline Member* getMemberNode() {
-        return memberNode;
-    }
-    int recvLoop();
-    static int enqueueWrapper(void *env, char *buff, int size);
-    void nodeStart(char *servaddrstr, short serverport);
-    int initThisNode(Address *joinaddr);
-    int introduceSelfToGroup(Address *joinAddress);
-    int finishUpThisNode();
-    void nodeLoop();
-    void checkMessages();
-    bool recvCallBack(void *env, char *data, int size);
-    void nodeLoopOps();
-    void initMemberListTable();
-    virtual ~MP1Node();
 };
 
 #endif /* _MP1NODE_H_ */

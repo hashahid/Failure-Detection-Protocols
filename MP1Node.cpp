@@ -30,36 +30,11 @@ MP1Node::MP1Node(Member *member, EmulNet *emul, Log *log, Address *address) {
 MP1Node::~MP1Node() {}
 
 /**
- * FUNCTION NAME: recvLoop
- *
- * DESCRIPTION: This function receives message from the network and pushes into the queue
- * 				This function is called by a node to receive messages currently waiting for it
- */
-int MP1Node::recvLoop() {
-    if ( this->memberNode->bFailed ) {
-        return false;
-    }
-    else {
-        return this->emulNet->ENrecv(&(this->memberNode->addr), enqueueWrapper, NULL, 1, &(this->memberNode->mp1q));
-    }
-}
-
-/**
- * FUNCTION NAME: enqueueWrapper
- *
- * DESCRIPTION: Enqueue the message from Emulnet into the queue
- */
-int MP1Node::enqueueWrapper(void *env, char *buff, int size) {
-    Queue q;
-    return q.enqueue((std::queue<q_elt> *)env, (void *)buff, size);
-}
-
-/**
  * FUNCTION NAME: nodeStart
  *
  * DESCRIPTION: This function bootstraps the node
- * 				All initializations routines for a member.
- * 				Called by the application layer.
+ *                 All initializations routines for a member.
+ *                 Called by the application layer.
  */
 void MP1Node::nodeStart(char *servaddrstr, short servport) {
     Address joinaddr;
@@ -80,8 +55,59 @@ void MP1Node::nodeStart(char *servaddrstr, short servport) {
 #endif
         exit(1);
     }
+}
+
+/**
+ * FUNCTION NAME: recvLoop
+ *
+ * DESCRIPTION: This function receives message from the network and pushes into the queue
+ * 				This function is called by a node to receive messages currently waiting for it
+ */
+void MP1Node::recvLoop() {
+    if ( !this->memberNode->bFailed ) {
+        this->emulNet->ENrecv(&(this->memberNode->addr), enqueueWrapper, NULL, 1, &(this->memberNode->mp1q));
+    }
+}
+
+/**
+ * FUNCTION NAME: nodeLoop
+ *
+ * DESCRIPTION: Executed periodically at each member
+ *                 Check your messages in queue and perform membership protocol duties
+ */
+void MP1Node::nodeLoop() {
+    if (this->memberNode->bFailed) {
+        return;
+    }
+    
+    // Check my messages
+    checkMessages();
+    
+    // Wait until you're in the group...
+    if( !this->memberNode->inGroup ) {
+        return;
+    }
+    
+    // ...then jump in and share your responsibilites!
+    nodeLoopOps();
     
     return;
+}
+
+/**
+ * FUNCTION NAME: finishUpThisNode
+ *
+ * DESCRIPTION: Wind up this node and clean up state
+ */
+void MP1Node::finishUpThisNode(){
+    this->memberNode->bFailed = true;
+    this->memberNode->inited = false;
+    this->memberNode->inGroup = false;
+    this->memberNode->nnb = 0;
+    this->memberNode->heartbeat = 0;
+    this->memberNode->pingCounter = TGOSSIP;
+    this->memberNode->timeOutCounter = -1;
+    this->memberNode->memberList.clear();
 }
 
 /**
@@ -101,6 +127,22 @@ int MP1Node::initThisNode(Address *joinaddr) {
     initMemberListTable();
     
     return 0;
+}
+
+/**
+ * FUNCTION NAME: initMemberListTable
+ *
+ * DESCRIPTION: Initialize the membership list
+ */
+void MP1Node::initMemberListTable() {
+    this->memberNode->memberList.clear();
+    
+    MemberListEntry self(getSelfId(), getSelfPort(), this->memberNode->heartbeat, this->memberNode->timeOutCounter);
+    this->memberNode->memberList.emplace_back(self);
+    
+#ifdef DEBUGLOG
+    this->log->logNodeAdd(&(this->memberNode->addr), &(this->memberNode->addr));
+#endif
 }
 
 /**
@@ -141,46 +183,13 @@ int MP1Node::introduceSelfToGroup(Address *joinaddr) {
 }
 
 /**
- * FUNCTION NAME: finishUpThisNode
+ * FUNCTION NAME: enqueueWrapper
  *
- * DESCRIPTION: Wind up this node and clean up state
+ * DESCRIPTION: Enqueue the message from Emulnet into the queue
  */
-int MP1Node::finishUpThisNode(){
-    this->memberNode->bFailed = true;
-    this->memberNode->inited = false;
-    this->memberNode->inGroup = false;
-    this->memberNode->nnb = 0;
-    this->memberNode->heartbeat = 0;
-    this->memberNode->pingCounter = TGOSSIP;
-    this->memberNode->timeOutCounter = -1;
-    this->memberNode->memberList.clear();
-    
-    return 0;
-}
-
-/**
- * FUNCTION NAME: nodeLoop
- *
- * DESCRIPTION: Executed periodically at each member
- * 				Check your messages in queue and perform membership protocol duties
- */
-void MP1Node::nodeLoop() {
-    if (this->memberNode->bFailed) {
-        return;
-    }
-    
-    // Check my messages
-    checkMessages();
-    
-    // Wait until you're in the group...
-    if( !this->memberNode->inGroup ) {
-        return;
-    }
-    
-    // ...then jump in and share your responsibilites!
-    nodeLoopOps();
-    
-    return;
+int MP1Node::enqueueWrapper(void *env, char *buff, int size) {
+    Queue q;
+    return q.enqueue((std::queue<q_elt> *)env, (void *)buff, size);
 }
 
 /**
@@ -223,12 +232,6 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
             this->memberNode->inGroup = true;
             updateMembershipList(dataWithoutHeader);
             break;
-        case HEARTBEAT:
-            updateMembershipList(dataWithoutHeader);
-            break;
-        case PULLREQUEST:
-            processPullRequest(dataWithoutHeader);
-            break;
         case PING:
             processPing(dataWithoutHeader);
             break;
@@ -245,12 +248,115 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
         case ACKTOSURROGATE:
             processMessageToSurrogate(dataWithoutHeader, false);
             break;
+        case HEARTBEAT:
+            updateMembershipList(dataWithoutHeader);
+            break;
+        case PULLREQUEST:
+            processPullRequest(dataWithoutHeader);
+            break;
         default:
             messageProcessed = false;
             break;
     }
     
     return messageProcessed;
+}
+
+/**
+ * FUNCTION NAME: nodeLoopOps
+ *
+ * DESCRIPTION: Check if any node hasn't responded within a timeout period and then delete the nodes
+ *                 Propagate your membership list
+ */
+void MP1Node::nodeLoopOps() {
+    if (this->memberNode->pingCounter > 0) {
+        this->memberNode->pingCounter--;
+    }
+    else {
+        this->memberNode->pingCounter = TGOSSIP;
+        this->memberNode->heartbeat++;
+        
+        switch (protocol) {
+            case SWIM:
+                pingRandomNode();
+                break;
+            case ALLTOALL:
+                allToAllBroadcast();
+                break;
+            case PUSHGOSSIP:
+                pushGossipBroadcast();
+                break;
+            case PULLGOSSIP:
+                pullGossipBroadcast();
+                break;
+            default:
+                break;
+        }
+    }
+    
+    if (MP1Node::protocol == SWIM) {
+        for(auto it = this->memberNode->memberList.begin(); it != this->memberNode->memberList.end();) {
+            auto mapIt = this->pingedNodes.find(it->getid());
+            if (mapIt == this->pingedNodes.end()) {
+                ++it;
+                continue;
+            }
+            // pinged node has failed, remove it
+            if(this->memberNode->timeOutCounter - mapIt->second > TREMOVE) {
+                this->pingedNodes.erase(mapIt);
+#ifdef DEBUGLOG
+                Address memberAddress = getAddressFromIDAndPort(it->getid(), it->getport());
+                this->log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
+#endif
+                addNodeToBuffer(this->failedNodeBuffer, *it);
+                it = this->memberNode->memberList.erase(it);
+            }
+            // pinged node is taking too long to reply. try to reach it via another node
+            else if (this->memberNode->timeOutCounter - mapIt->second > TFAIL) {
+                std::unordered_set<int> randomIndices;
+                int maxRandIndices = std::min(TARGETMEMBERS, static_cast<int>(this->memberNode->memberList.size()) - 1 - static_cast<int>(this->pingedNodes.size()));
+                while (static_cast<int>(randomIndices.size()) < maxRandIndices) {
+                    // randomly get the index of your gossip target
+                    int randIdx = getRandomInteger(0, this->memberNode->memberList.size() - 1);
+                    MemberListEntry randomNode = this->memberNode->memberList[randIdx];
+                    if (this->memberNode->memberList[randIdx].getid() != getSelfId() && this->pingedNodes.find(randomNode.getid()) == this->pingedNodes.end()) {
+                        randomIndices.insert(randIdx);
+                    }
+                }
+                
+                // prepare and send a new ping message to random targets for them to forward
+                MessageHdr *msg = nullptr;
+                Address pingeeAddress = getAddressFromIDAndPort(it->getid(), it->getport());
+                size_t msgsize = prepareMessageForSurrogate(&msg, PINGTOSURROGATE, this->memberNode->addr, pingeeAddress);
+                
+                for (int idx : randomIndices) {
+                    MemberListEntry member = this->memberNode->memberList[idx];
+                    
+                    Address memberAddress = getAddressFromIDAndPort(member.getid(), member.getport());
+                    this->emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
+                }
+                
+                free(msg);
+                ++it;
+            }
+            else {
+                ++it;
+            }
+        }
+        cleanBuffer(this->updatedNodeBuffer);
+        cleanBuffer(this->failedNodeBuffer);
+    } else {
+        removeFailedMembers();
+    }
+    
+    this->memberNode->timeOutCounter++;
+    
+    // update myself in my own membership list
+    MemberListEntry *self = getMemberFromMemberList(getSelfId());
+    if (self) {
+        self->setheartbeat(this->memberNode->heartbeat);
+        self->settimestamp(this->memberNode->timeOutCounter);
+    }
 }
 
 /**
@@ -326,27 +432,38 @@ void MP1Node::updateMembershipList(char *data) {
 }
 
 /**
- * FUNCTION NAME: processPullRequest
+ * FUNCTION NAME: pingRandomNode
  *
- * DESCRIPTION: Send your membership list to the node that pings you for it
- *              Used in the pull gossip protocol
+ * DESCRIPTION: Ping a random node to check its health and to send your memberhsip updates to
+ *              Used in the SWIM protocol
  */
-void MP1Node::processPullRequest(char *data) {
-    if (!this->hasUpdatesToGive) {
+void MP1Node::pingRandomNode() {
+    if (this->memberNode->memberList.size() < 2 || this->memberNode->memberList.size() - this->pingedNodes.size() < 2) {
         return;
     }
     
-    int id;
-    memcpy(&id, data, sizeof(int));
+    // select the node randomly
+    int randIdx;
+    MemberListEntry randomNode;
+    do {
+        randIdx = getRandomInteger(0, this->memberNode->memberList.size());
+        randomNode = this->memberNode->memberList[randIdx];
+    } while (randomNode.getid() == getSelfId() || this->pingedNodes.find(randomNode.getid()) != this->pingedNodes.end());
     
-    short port;
-    memcpy(&port, data + sizeof(int), sizeof(short));
+    // then ping it
+    size_t msgsize = sizeof(MessageHdr) + sizeof(this->memberNode->addr.addr) + 2 * sizeof(size_t) + (this->updatedNodeBuffer.size() + this->failedNodeBuffer.size()) * sizeof(MemberListEntry);
+    MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
+    msg->msgType = PING;
+    memcpy((char*)(msg+1), &(this->memberNode->addr.addr), sizeof(this->memberNode->addr.addr));
     
-    MessageHdr *msg = nullptr;
-    size_t msgsize = createHealthyMembershipListMsg(&msg, HEARTBEAT);
+    addBufferInfoToMessage(&msg, sizeof(this->memberNode->addr.addr));
     
-    Address memberAddress = getAddressFromIDAndPort(id, port);
-    this->emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
+    Address randomAndress = getAddressFromIDAndPort(randomNode.getid(), randomNode.getport());
+    this->emulNet->ENsend(&(this->memberNode->addr), &randomAndress, (char *)msg, msgsize);
+    
+    this->pingedNodes[randomNode.getid()] = this->memberNode->timeOutCounter;
+    incrementBufferCounts(this->updatedNodeBuffer);
+    incrementBufferCounts(this->failedNodeBuffer);
     
     free(msg);
 }
@@ -408,6 +525,26 @@ void MP1Node::processAck(char *data) {
     }
     
     readBufferInfoFromMessage(data, sizeof(int));
+}
+
+/**
+ * FUNCTION NAME: prepareMessageForSurrogate
+ *
+ * DESCRIPTION: Construct a message to send to the surrogate pinger
+ */
+size_t MP1Node::prepareMessageForSurrogate(MessageHdr **msg, MsgTypes msgType, Address& pinger, Address& pingee) {
+    size_t msgsize = sizeof(MessageHdr) + 2 * sizeof(this->memberNode->addr.addr) + 2 * sizeof(size_t) + (this->updatedNodeBuffer.size() + this->failedNodeBuffer.size()) * sizeof(MemberListEntry);
+    *msg = (MessageHdr *)malloc(msgsize * sizeof(char)); // should be freed by caller
+    (*msg)->msgType = msgType;
+    memcpy((char*)(*msg+1), pinger.addr, sizeof(pinger.addr));
+    size_t offset = sizeof(pinger.addr);
+    
+    memcpy((char*)(*msg+1) + offset, &pingee.addr, sizeof(pingee.addr));
+    offset += sizeof(pingee.addr);
+    
+    addBufferInfoToMessage(msg, offset);
+    
+    return msgsize;
 }
 
 /**
@@ -523,103 +660,6 @@ void MP1Node::processPingFromSurrogate(char *data) {
 }
 
 /**
- * FUNCTION NAME: nodeLoopOps
- *
- * DESCRIPTION: Check if any node hasn't responded within a timeout period and then delete the nodes
- * 				Propagate your membership list
- */
-void MP1Node::nodeLoopOps() {
-    if (this->memberNode->pingCounter > 0) {
-        this->memberNode->pingCounter--;
-    }
-    else {
-        this->memberNode->pingCounter = TGOSSIP;
-        this->memberNode->heartbeat++;
-        
-        switch (protocol) {
-            case ALLTOALL:
-                allToAllBroadcast();
-                break;
-            case PUSHGOSSIP:
-                pushGossipBroadcast();
-                break;
-            case PULLGOSSIP:
-                pullGossipBroadcast();
-                break;
-            case SWIM:
-                pingRandomNode();
-                break;
-            default:
-                break;
-        }
-    }
-    
-    if (MP1Node::protocol == SWIM) {
-        for(auto it = this->memberNode->memberList.begin(); it != this->memberNode->memberList.end();) {
-            auto mapIt = this->pingedNodes.find(it->getid());
-            if (mapIt == this->pingedNodes.end()) {
-                ++it;
-                continue;
-            }
-            // pinged node has failed, remove it
-            if(this->memberNode->timeOutCounter - mapIt->second > TREMOVE) {
-                this->pingedNodes.erase(mapIt);
-#ifdef DEBUGLOG
-                Address memberAddress = getAddressFromIDAndPort(it->getid(), it->getport());
-                this->log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
-#endif
-                addNodeToBuffer(this->failedNodeBuffer, *it);
-                it = this->memberNode->memberList.erase(it);
-            }
-            // pinged node is taking too long to reply. try to reach it via another node
-            else if (this->memberNode->timeOutCounter - mapIt->second > TFAIL) {
-                std::unordered_set<int> randomIndices;
-                int maxRandIndices = std::min(TARGETMEMBERS, static_cast<int>(this->memberNode->memberList.size()) - 1 - static_cast<int>(this->pingedNodes.size()));
-                while (static_cast<int>(randomIndices.size()) < maxRandIndices) {
-                    // randomly get the index of your gossip target
-                    int randIdx = getRandomInteger(0, this->memberNode->memberList.size() - 1);
-                    MemberListEntry randomNode = this->memberNode->memberList[randIdx];
-                    if (this->memberNode->memberList[randIdx].getid() != getSelfId() && this->pingedNodes.find(randomNode.getid()) == this->pingedNodes.end()) {
-                        randomIndices.insert(randIdx);
-                    }
-                }
-                
-                // prepare and send a new ping message to random targets for them to forward
-                MessageHdr *msg = nullptr;
-                Address pingeeAddress = getAddressFromIDAndPort(it->getid(), it->getport());
-                size_t msgsize = prepareMessageForSurrogate(&msg, PINGTOSURROGATE, this->memberNode->addr, pingeeAddress);
-                
-                for (int idx : randomIndices) {
-                    MemberListEntry member = this->memberNode->memberList[idx];
-                    
-                    Address memberAddress = getAddressFromIDAndPort(member.getid(), member.getport());
-                    this->emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
-                }
-                
-                free(msg);
-                ++it;
-            }
-            else {
-                ++it;
-            }
-        }
-        cleanBuffer(this->updatedNodeBuffer);
-        cleanBuffer(this->failedNodeBuffer);
-    } else {
-        removeFailedMembers();
-    }
-    
-    this->memberNode->timeOutCounter++;
-    
-    // update myself in my own membership list
-    MemberListEntry *self = getMemberFromMemberList(getSelfId());
-    if (self) {
-        self->setheartbeat(this->memberNode->heartbeat);
-        self->settimestamp(this->memberNode->timeOutCounter);
-    }
-}
-
-/**
  * FUNCTION NAME: allToAllBroadcast
  *
  * DESCRIPTION: Broadcast a heartbeat message to all other nodes in your membership list
@@ -709,86 +749,50 @@ void MP1Node::pullGossipBroadcast() {
 }
 
 /**
- * FUNCTION NAME: pingRandomNode
+ * FUNCTION NAME: processPullRequest
  *
- * DESCRIPTION: Ping a random node to check its health and to send your memberhsip updates to
- *              Used in the SWIM protocol
+ * DESCRIPTION: Send your membership list to the node that pings you for it
+ *              Used in the pull gossip protocol
  */
-void MP1Node::pingRandomNode() {
-    if (this->memberNode->memberList.size() < 2 || this->memberNode->memberList.size() - this->pingedNodes.size() < 2) {
+void MP1Node::processPullRequest(char *data) {
+    if (!this->hasUpdatesToGive) {
         return;
     }
     
-    // select the node randomly
-    int randIdx;
-    MemberListEntry randomNode;
-    do {
-        randIdx = getRandomInteger(0, this->memberNode->memberList.size());
-        randomNode = this->memberNode->memberList[randIdx];
-    } while (randomNode.getid() == getSelfId() || this->pingedNodes.find(randomNode.getid()) != this->pingedNodes.end());
+    int id;
+    memcpy(&id, data, sizeof(int));
     
-    // then ping it
-    size_t msgsize = sizeof(MessageHdr) + sizeof(this->memberNode->addr.addr) + 2 * sizeof(size_t) + (this->updatedNodeBuffer.size() + this->failedNodeBuffer.size()) * sizeof(MemberListEntry);
-    MessageHdr *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
-    msg->msgType = PING;
-    memcpy((char*)(msg+1), &(this->memberNode->addr.addr), sizeof(this->memberNode->addr.addr));
+    short port;
+    memcpy(&port, data + sizeof(int), sizeof(short));
     
-    addBufferInfoToMessage(&msg, sizeof(this->memberNode->addr.addr));
+    MessageHdr *msg = nullptr;
+    size_t msgsize = createHealthyMembershipListMsg(&msg, HEARTBEAT);
     
-    Address randomAndress = getAddressFromIDAndPort(randomNode.getid(), randomNode.getport());
-    this->emulNet->ENsend(&(this->memberNode->addr), &randomAndress, (char *)msg, msgsize);
-    
-    this->pingedNodes[randomNode.getid()] = this->memberNode->timeOutCounter;
-    incrementBufferCounts(this->updatedNodeBuffer);
-    incrementBufferCounts(this->failedNodeBuffer);
+    Address memberAddress = getAddressFromIDAndPort(id, port);
+    this->emulNet->ENsend(&(this->memberNode->addr), &memberAddress, (char *)msg, msgsize);
     
     free(msg);
 }
 
 /**
- * FUNCTION NAME: prepareMessageForSurrogate
+ * FUNCTION NAME: addNodeToBuffer
  *
- * DESCRIPTION: Construct a message to send to the surrogate pinger
+ * DESCRIPTION: Adds the parameter node's info to the parameter buffer, replacing existing stale info
  */
-size_t MP1Node::prepareMessageForSurrogate(MessageHdr **msg, MsgTypes msgType, Address& pinger, Address& pingee) {
-    size_t msgsize = sizeof(MessageHdr) + 2 * sizeof(this->memberNode->addr.addr) + 2 * sizeof(size_t) + (this->updatedNodeBuffer.size() + this->failedNodeBuffer.size()) * sizeof(MemberListEntry);
-    *msg = (MessageHdr *)malloc(msgsize * sizeof(char));
-    (*msg)->msgType = msgType;
-    memcpy((char*)(*msg+1), pinger.addr, sizeof(pinger.addr));
-    size_t offset = sizeof(pinger.addr);
-    
-    memcpy((char*)(*msg+1) + offset, &pingee.addr, sizeof(pingee.addr));
-    offset += sizeof(pingee.addr);
-    
-    addBufferInfoToMessage(msg, offset);
-    
-    return msgsize;
-}
-
-/**
- * FUNCTION NAME: cleanBuffer
- *
- * DESCRIPTION: Remove all stale membership updates from the parameter buffer
- */
-void MP1Node::cleanBuffer(std::vector<MembershipUpdate>& buffer) {
+void MP1Node::addNodeToBuffer(std::vector<MembershipUpdate>& buffer, MemberListEntry& node) {
     for (auto it = buffer.begin(); it != buffer.end();) {
-        if (it->count >= BUFFERTHRESHOLD) {
+        if (it->node.getid() == node.getid()) {
             it = buffer.erase(it);
+            break;
         } else {
             ++it;
         }
     }
-}
-
-/**
- * FUNCTION NAME: incrementBufferCounts
- *
- * DESCRIPTION: Increase the ping count for all membership updates in the parameter buffer
- */
-void MP1Node::incrementBufferCounts(std::vector<MembershipUpdate>& buffer) {
-    for (MembershipUpdate& update : buffer) {
-        update.count++;
-    }
+    
+    MembershipUpdate update;
+    update.node = node;
+    update.count = 0;
+    buffer.emplace_back(update);
 }
 
 /**
@@ -813,6 +817,32 @@ void MP1Node::addBufferInfoToMessage(MessageHdr **msg, size_t offset) {
     for (MembershipUpdate& update : this->failedNodeBuffer) {
         memcpy((char*)(*msg+1) + offset, &update.node, sizeof(MemberListEntry));
         offset += sizeof(MemberListEntry);
+    }
+}
+
+/**
+ * FUNCTION NAME: incrementBufferCounts
+ *
+ * DESCRIPTION: Increase the ping count for all membership updates in the parameter buffer
+ */
+void MP1Node::incrementBufferCounts(std::vector<MembershipUpdate>& buffer) {
+    for (MembershipUpdate& update : buffer) {
+        update.count++;
+    }
+}
+
+/**
+ * FUNCTION NAME: cleanBuffer
+ *
+ * DESCRIPTION: Remove all stale membership updates from the parameter buffer
+ */
+void MP1Node::cleanBuffer(std::vector<MembershipUpdate>& buffer) {
+    for (auto it = buffer.begin(); it != buffer.end();) {
+        if (it->count >= BUFFERTHRESHOLD) {
+            it = buffer.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 
@@ -859,53 +889,53 @@ void MP1Node::readBufferInfoFromMessage(char *data, size_t offset) {
 }
 
 /**
- * FUNCTION NAME: getAddressFromIDAndPort
+ * FUNCTION NAME: ensureNodePresenceInList
  *
- * DESCRIPTION: Returns an address composed from the parameter ID and port
+ * DESCRIPTION: Checks if the node with the parameter properties exists in the membership list and adds it if not
  */
-Address MP1Node::getAddressFromIDAndPort(int id, short port) {
-    Address entryaddr;
-    
-    memset(&entryaddr, 0, sizeof(Address));
-    *(int *)(&entryaddr.addr) = id;
-    *(short *)(&entryaddr.addr[4]) = port;
-    
-    return entryaddr;
+void MP1Node::ensureNodePresenceInList(int id, short port) {
+    MemberListEntry *node = getMemberFromMemberList(id);
+    if (!node) {
+        this->memberNode->memberList.emplace_back(MemberListEntry(id, port, this->memberNode->timeOutCounter, this->memberNode->timeOutCounter));
+        
+#ifdef DEBUGLOG
+        Address address = getAddressFromIDAndPort(id, port);
+        this->log->logNodeAdd(&(this->memberNode->addr), &address);
+#endif
+    }
 }
 
 /**
- * FUNCTION NAME: initMemberListTable
+ * FUNCTION NAME: updateNodeInMembershipList
  *
- * DESCRIPTION: Initialize the membership list
+ * DESCRIPTION: Updates the node with the parameter properties in the membership list if it exists or adds it otherwise
  */
-void MP1Node::initMemberListTable() {
-    this->memberNode->memberList.clear();
-    
-    MemberListEntry self(getSelfId(), getSelfPort(), this->memberNode->heartbeat, this->memberNode->timeOutCounter);
-    this->memberNode->memberList.emplace_back(self);
-    
+void MP1Node::updateNodeInMembershipList(int nodeId, short port, long heartbeat) {
+    bool membershipListUpdated = false;
+    MemberListEntry *member = getMemberFromMemberList(nodeId);
+    // update heartbeat for member node if it exists
+    if (member && heartbeat > member->heartbeat) {
+        member->setheartbeat(heartbeat);
+        member->settimestamp(this->memberNode->timeOutCounter);
+        membershipListUpdated = true;
+    }
+    // or add it if it doesn't
+    else if (!member) {
+        member = new MemberListEntry(nodeId, port, heartbeat, this->memberNode->timeOutCounter);
+        this->memberNode->memberList.emplace_back(*member);
+        
 #ifdef DEBUGLOG
-    this->log->logNodeAdd(&(this->memberNode->addr), &(this->memberNode->addr));
+        Address memberAddress = getAddressFromIDAndPort(member->getid(), member->getport());
+        this->log->logNodeAdd(&(this->memberNode->addr), &memberAddress);
 #endif
-}
-
-/**
- * FUNCTION NAME: removeFailedMembers
- *
- * DESCRIPTION: Remove nodes from your membership list that have not replied to heartbeats
- */
-void MP1Node::removeFailedMembers() {
-    for(auto it = this->memberNode->memberList.begin(); it != this->memberNode->memberList.end();) {
-        if(this->memberNode->timeOutCounter - it->gettimestamp() > TREMOVE) {
-#ifdef DEBUGLOG
-            Address memberAddress = getAddressFromIDAndPort(it->getid(), it->getport());
-            this->log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
-#endif
-            it = this->memberNode->memberList.erase(it);
-        }
-        else {
-            ++it;
-        }
+        
+        delete member;
+        membershipListUpdated = true;
+    }
+    
+    if (membershipListUpdated) {
+        addNodeToBuffer(this->updatedNodeBuffer, *member);
+        this->hasUpdatesToGive = true;
     }
 }
 
@@ -959,6 +989,26 @@ size_t MP1Node::createHealthyMembershipListMsg(MessageHdr **msg, MsgTypes msgTyp
 }
 
 /**
+ * FUNCTION NAME: removeFailedMembers
+ *
+ * DESCRIPTION: Remove nodes from your membership list that have not replied to heartbeats
+ */
+void MP1Node::removeFailedMembers() {
+    for(auto it = this->memberNode->memberList.begin(); it != this->memberNode->memberList.end();) {
+        if(this->memberNode->timeOutCounter - it->gettimestamp() > TREMOVE) {
+#ifdef DEBUGLOG
+            Address memberAddress = getAddressFromIDAndPort(it->getid(), it->getport());
+            this->log->logNodeRemove(&(this->memberNode->addr), &memberAddress);
+#endif
+            it = this->memberNode->memberList.erase(it);
+        }
+        else {
+            ++it;
+        }
+    }
+}
+
+/**
  * FUNCTION NAME: getMemberFromMemberList
  *
  * DESCRIPTION: Retrieve the node associated with the parameter ID
@@ -977,75 +1027,18 @@ MemberListEntry* MP1Node::getMemberFromMemberList(int id) {
 }
 
 /**
- * FUNCTION NAME: ensureNodePresenceInList
+ * FUNCTION NAME: getAddressFromIDAndPort
  *
- * DESCRIPTION: Checks if the node with the parameter properties exists in the membership list and adds it if not
+ * DESCRIPTION: Returns an address composed from the parameter ID and port
  */
-void MP1Node::ensureNodePresenceInList(int id, short port) {
-    MemberListEntry *node = getMemberFromMemberList(id);
-    if (!node) {
-        this->memberNode->memberList.emplace_back(MemberListEntry(id, port, this->memberNode->timeOutCounter, this->memberNode->timeOutCounter));
-        
-#ifdef DEBUGLOG
-        Address address = getAddressFromIDAndPort(id, port);
-        this->log->logNodeAdd(&(this->memberNode->addr), &address);
-#endif
-    }
-}
-
-/**
- * FUNCTION NAME: addNodeToBuffer
- *
- * DESCRIPTION: Adds the parameter node's info to the parameter buffer, replacing existing stale info
- */
-void MP1Node::addNodeToBuffer(std::vector<MembershipUpdate>& buffer, MemberListEntry& node) {
-    for (auto it = buffer.begin(); it != buffer.end();) {
-        if (it->node.getid() == node.getid()) {
-            it = buffer.erase(it);
-            break;
-        } else {
-            ++it;
-        }
-    }
+Address MP1Node::getAddressFromIDAndPort(int id, short port) {
+    Address entryaddr;
     
-    MembershipUpdate update;
-    update.node = node;
-    update.count = 0;
-    buffer.emplace_back(update);
-}
-
-/**
- * FUNCTION NAME: updateNodeInMembershipList
- *
- * DESCRIPTION: Updates the node with the parameter properties in the membership list if it exists or adds it otherwise
- */
-void MP1Node::updateNodeInMembershipList(int nodeId, short port, long heartbeat) {
-    bool membershipListUpdated = false;
-    MemberListEntry *member = getMemberFromMemberList(nodeId);
-    // update heartbeat for member node if it exists
-    if (member && heartbeat > member->heartbeat) {
-        member->setheartbeat(heartbeat);
-        member->settimestamp(this->memberNode->timeOutCounter);
-        membershipListUpdated = true;
-    }
-    // or add it if it doesn't
-    else if (!member) {
-        member = new MemberListEntry(nodeId, port, heartbeat, this->memberNode->timeOutCounter);
-        this->memberNode->memberList.emplace_back(*member);
-        
-#ifdef DEBUGLOG
-        Address memberAddress = getAddressFromIDAndPort(member->getid(), member->getport());
-        this->log->logNodeAdd(&(this->memberNode->addr), &memberAddress);
-#endif
-        
-        delete member;
-        membershipListUpdated = true;
-    }
+    memset(&entryaddr, 0, sizeof(Address));
+    *(int *)(&entryaddr.addr) = id;
+    *(short *)(&entryaddr.addr[4]) = port;
     
-    if (membershipListUpdated) {
-        addNodeToBuffer(this->updatedNodeBuffer, *member);
-        this->hasUpdatesToGive = true;
-    }
+    return entryaddr;
 }
 
 /**

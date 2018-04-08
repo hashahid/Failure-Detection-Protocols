@@ -91,7 +91,7 @@ public:
 	void *ENinit(Address *myaddr, short port);
 	int ENsend(Address *myaddr, Address *toaddr, std::string data);
 	int ENsend(Address *myaddr, Address *toaddr, char *data, int size);
-	int ENrecv(Address *myaddr, int (* enq)(void *, char *, int), struct timeval *t, int times, void *queue);
+	void ENrecv(Address *myaddr, int (* enq)(void *, char *, int), struct timeval *t, int times, void *queue);
 	int ENcleanup();
 };
 
