@@ -5,6 +5,3 @@
   - all-to-all heartbeating
   - push gossip
   - pull gossip
-
-### Todo:
-  - Better README
